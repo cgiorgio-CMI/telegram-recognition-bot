@@ -5,7 +5,8 @@ import datetime
 import re
 import asyncio
 
-TOKEN = "8745044757:AAGmObzW1reBx82IAQR2_pgMFe2y2ofbySA"
+import os
+TOKEN = os.getenv("BOT_TOKEN")
 
 conn = sqlite3.connect("recognition.db", check_same_thread=False)
 cursor = conn.cursor()
@@ -130,3 +131,4 @@ job_queue = app.job_queue
 job_queue.run_daily(friday_leaderboard, time=datetime.time(hour=17), days=(4,))
 
 app.run_polling()
+
