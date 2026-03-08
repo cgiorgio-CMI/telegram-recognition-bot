@@ -16,7 +16,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # -----------------------
 
 BOT_TOKEN = "8745044757:AAGmObzW1reBx82IAQR2_pgMFe2y2ofbySA"
-ADMINS = ["cassg13", "Kennedy"]
+ADMINS = ["cassg13", "Kennedy", "cass"]
 
 MAX_DAILY_RECOGNITIONS = 5
 
