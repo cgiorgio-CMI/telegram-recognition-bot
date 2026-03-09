@@ -66,11 +66,11 @@ cost INTEGER
 """)
 
 cursor.execute("""
-CREATE TABLE IF NOT EXISTS recognitions(
-id INTEGER PRIMARY KEY AUTOINCREMENT,
-sender TEXT,
-receiver TEXT,
-date TEXT
+CREATE TABLE IF NOT EXISTS recognitions (
+    sender TEXT,
+    receiver TEXT,
+    date TEXT,
+    message_id INTEGER UNIQUE
 )
 """)
 
@@ -120,6 +120,15 @@ async def recognize(update, context):
     sender_user = update.message.from_user
     sender_id = sender_user.id
     sender = sender_user.username if sender_user.username else sender_user.first_name
+    message_id = update.message.message_id
+
+cursor.execute(
+    "SELECT 1 FROM recognitions WHERE message_id=?",
+    (message_id,)
+)
+
+if cursor.fetchone():
+    return
 
     # ----- METHOD 1: Reply recognition -----
     if update.message.reply_to_message:
@@ -239,9 +248,9 @@ async def reaction_recognition(update, context):
     today = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
-        "INSERT INTO recognitions(sender,receiver,date) VALUES(?,?,?)",
-        (sender, receiver, today)
-    )
+    "INSERT INTO recognitions(sender,receiver,date,message_id) VALUES(?,?,?,?)",
+    (sender, receiver, today, message_id)
+)
 
     conn.commit()
 
@@ -483,7 +492,21 @@ def run_scheduler(app):
 # -----------------------
 # MAIN
 # -----------------------
+async def mypoints(update, context):
 
+    user = update.message.from_user
+    name = user.username if user.username else user.first_name
+
+    cursor.execute(
+        "SELECT COUNT(*) FROM recognitions WHERE receiver=?",
+        (name,)
+    )
+
+    points = cursor.fetchone()[0]
+
+    await update.message.reply_text(
+        f"🏆 {name}, you currently have {points} recognition points!"
+    )
 def main():
 
     logging.basicConfig(level=logging.INFO)
@@ -516,4 +539,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
