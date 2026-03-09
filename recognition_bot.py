@@ -225,32 +225,45 @@ async def reaction_recognition(update, context):
     if not update.message:
         return
 
-    if not update.message.reply_to_message:
+    text = update.message.text
+
+    if "👏" not in text:
         return
 
-    if "👏" not in update.message.text:
-        return
+    # Count how many claps
+    points = text.count("👏")
 
     sender_user = update.message.from_user
-    receiver_user = update.message.reply_to_message.from_user
-
     sender = sender_user.username if sender_user.username else sender_user.first_name
-    receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
-
-    if sender == receiver:
-        return
 
     if daily_count(sender) >= MAX_DAILY_RECOGNITIONS:
         return
 
-    add_point(receiver)
+    words = text.split()
+
+    receiver = None
+
+    for w in words:
+        if w.startswith("@"):
+            receiver = w.replace("@", "")
+            break
+
+    if not receiver:
+        return
+
+    if receiver.lower() == sender.lower():
+        return
+
+    # Give points
+    for _ in range(points):
+        add_point(receiver)
 
     today = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
-    "INSERT INTO recognitions(sender,receiver,date,message_id) VALUES(?,?,?,?)",
-    (sender, receiver, today, message_id)
-)
+        "INSERT INTO recognitions(sender,receiver,date,message_id) VALUES(?,?,?,?)",
+        (sender, receiver, today, update.message.message_id)
+    )
 
     conn.commit()
 
@@ -258,12 +271,12 @@ async def reaction_recognition(update, context):
         today,
         sender,
         receiver,
-        "👏 reaction",
-        1
+        f"{points} 👏",
+        points
     ])
 
     await update.message.reply_text(
-        f"👏 {receiver} received recognition!"
+        f"👏 {receiver} received {points} recognition point(s)!"
     )
 # -----------------------
 # LEADERBOARD
