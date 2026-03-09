@@ -1,6 +1,6 @@
 import logging
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 import schedule
 import threading
 import time
@@ -10,14 +10,6 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
-async def ping(update, context):
-    chat_type = update.message.chat.type
-    chat_id = update.message.chat.id
-    user = update.message.from_user.username
-
-    await update.message.reply_text(
-        f"✅ Bot is working!\nChat type: {chat_type}\nChat ID: {chat_id}\nUser: {user}"
-    )
 
 
 # -----------------------
@@ -31,6 +23,8 @@ ADMINS = ["cassg13", "Kennedy", "cass"]
 
 MAX_DAILY_RECOGNITIONS = 5
 
+MILESTONES = [10, 25, 50, 100, 200]
+
 
 # -----------------------
 # GOOGLE SHEETS
@@ -41,9 +35,8 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-import os
 import json
-from oauth2client.service_account import ServiceAccountCredentials
+
 
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
@@ -79,8 +72,11 @@ cost INTEGER
 cursor.execute("""
 CREATE TABLE IF NOT EXISTS recognitions (
     sender TEXT,
+    sender_id INTEGER,
     receiver TEXT,
+    receiver_id INTEGER,
     date TEXT,
+    points INTEGER,
     message_id INTEGER UNIQUE
 )
 """)
@@ -97,7 +93,7 @@ def daily_count(user):
     today = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
-        "SELECT COUNT(*) FROM recognitions WHERE sender=? AND date=?",
+        "SELECT COALESCE(SUM(points),0) FROM recognitions WHERE sender=? AND date=?",
         (user, today)
     )
 
@@ -121,6 +117,24 @@ def add_point(user):
     )
 
     conn.commit()
+
+def check_milestone(user):
+
+    cursor.execute(
+        "SELECT SUM(points) FROM recognitions WHERE receiver=?",
+        (user,)
+    )
+
+    row = cursor.fetchone()
+    points = row[0] if row and row[0] else 0
+
+    previous = points - 1
+
+    for m in MILESTONES:
+        if points >= m and previous < m:
+            return m
+
+    return None
 
 # -----------------------
 # RECOGNITION BY COMMAND
@@ -173,7 +187,6 @@ async def recognize(update, context):
             )
             return
 
-        # Prevent multiple mentions
         if context.args[0].count("@") > 1:
             await update.message.reply_text(
                 "❌ Please recognize only one person at a time."
@@ -181,19 +194,11 @@ async def recognize(update, context):
             return
 
         receiver = context.args[0].replace("@", "")
+        receiver_id = None
         message = " ".join(context.args[1:])
 
         if receiver.lower() == sender.lower():
             await update.message.reply_text("❌ You cannot recognize yourself.")
-            return
-
-        # Verify the user exists in the group
-        try:
-            member = await context.bot.get_chat_member(update.effective_chat.id, f"@{receiver}")
-        except:
-            await update.message.reply_text(
-                "❌ That user is not a member of this group."
-            )
             return
 
     # Daily recognition limit
@@ -204,27 +209,47 @@ async def recognize(update, context):
         return
 
     add_point(receiver)
+    milestone = check_milestone(receiver)
 
     today = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
-        "INSERT INTO recognitions(sender,receiver,date) VALUES(?,?,?)",
-        (sender, receiver, today)
+    """
+    INSERT INTO recognitions(sender,sender_id,receiver,receiver_id,date,points,message_id)
+    VALUES(?,?,?,?,?,?,?)
+    """,
+    (
+        sender,
+        sender_id,
+        receiver,
+        receiver_id,
+        today,
+        1,
+        message_id
+    )
     )
 
     conn.commit()
 
-    recognitions_sheet.append_row([
-        today,
-        sender,
-        receiver,
-        message,
-        1
-    ])
+    try:
+        recognitions_sheet.append_row([
+            today,
+            sender,
+            receiver,
+            message,
+            1
+        ])
+    except Exception as e:
+        print("Google Sheets logging failed:", e)
 
-    await update.message.reply_text(
-        f"👏 {receiver} received recognition!"
-    )
+    if milestone:
+        await update.message.reply_text(
+            f"👏 {receiver} received recognition!\n\n🔥 {receiver} just reached {milestone} points!"
+        )
+    else:
+        await update.message.reply_text(
+            f"👏 {receiver} received recognition!"
+        )
 
 
 # -----------------------
@@ -233,39 +258,60 @@ async def recognize(update, context):
 
 async def reaction_recognition(update, context):
 
-    if not update.message:
+    if not update.message or not update.message.text:
         return
 
     text = update.message.text
 
+    # Only continue if clap emoji exists
     if "👏" not in text:
         return
 
-    # Count how many claps
-    points = text.count("👏")
+    print("Clap recognition triggered:", text)
+
+    # Count claps
+    points = max(1, min(text.count("👏"), 5))
 
     sender_user = update.message.from_user
     sender = sender_user.username if sender_user.username else sender_user.first_name
+    message_id = update.message.message_id
 
-    if daily_count(sender) + points > MAX_DAILY_RECOGNITIONS:
-        await update.message.reply_text(
-            "Daily recognition limit reached (5)."
-        )
+    # Prevent duplicate processing
+    cursor.execute(
+        "SELECT 1 FROM recognitions WHERE message_id=?",
+        (message_id,)
+    )
+    if cursor.fetchone():
         return
-        
 
-    words = text.split()
+    # Daily limit check
+    if daily_count(sender) + points > MAX_DAILY_RECOGNITIONS:
+        await update.message.reply_text("Daily recognition limit reached (5).")
+        return
 
+    # Determine receiver
     receiver = None
+    receiver_id = None
 
-    for w in words:
-        if w.startswith("@"):
-            receiver = w.replace("@", "")
-            break
+    # METHOD 1: reply recognition (BEST METHOD)
+    if update.message.reply_to_message:
+
+        receiver_user = update.message.reply_to_message.from_user
+        receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
+        receiver_id = receiver_user.id
+
+    # METHOD 2: @username in message
+    else:
+        for word in text.split():
+            if word.startswith("@"):
+                receiver = word.replace("@", "")
+                break
 
     if not receiver:
         return
 
+
+    # Prevent self recognition
     if receiver.lower() == sender.lower():
         return
 
@@ -273,39 +319,73 @@ async def reaction_recognition(update, context):
     for _ in range(points):
         add_point(receiver)
 
+    milestone = check_milestone(receiver)
+
+    if milestone:
+        await update.message.reply_text(
+            f"👏 {receiver} received {points} recognition point(s)!\n\n🔥 {receiver} just reached {milestone} points!"
+    )
+    else:
+        await update.message.reply_text(
+            f"👏 {receiver} received {points} recognition point(s)!"
+        )
+
     today = datetime.now().strftime("%Y-%m-%d")
 
     cursor.execute(
-        "INSERT INTO recognitions(sender,receiver,date,message_id) VALUES(?,?,?,?)",
-        (sender, receiver, today, update.message.message_id)
+    """
+    INSERT INTO recognitions(sender,sender_id,receiver,receiver_id,date,points,message_id)
+    VALUES(?,?,?,?,?,?,?)
+    """,
+    (
+        sender,
+        sender_user.id,
+        receiver,
+        receiver_id,
+        today,
+        points,
+        message_id
+    )
     )
 
     conn.commit()
 
-    recognitions_sheet.append_row([
-        today,
-        sender,
-        receiver,
-        f"{points} 👏",
-        points
-    ])
+    try:
+        recognitions_sheet.append_row([
+            today,
+            sender,
+            receiver,
+            f"{points} 👏",
+            points
+        ])
+    except Exception as e:
+        print("Google Sheets logging failed:", e)
 
-    await update.message.reply_text(
-        f"👏 {receiver} received {points} recognition point(s)!"
-    )
 # -----------------------
 # LEADERBOARD
 # -----------------------
 
 async def leaderboard(update, context):
 
+    today = datetime.now()
+    start_of_week = today - timedelta(days=today.weekday())
+    start_of_week = start_of_week.strftime("%Y-%m-%d")
+
     cursor.execute(
-        "SELECT user,points FROM points ORDER BY points DESC LIMIT 10"
+    """
+    SELECT receiver, SUM(points)
+    FROM recognitions
+    WHERE date >= ?
+    GROUP BY receiver
+    ORDER BY SUM(points) DESC
+    LIMIT 10
+    """,
+    (start_of_week,)
     )
 
     rows = cursor.fetchall()
 
-    text = "🏆 Leaderboard\n\n"
+    text = "🏆 Weekly Leaderboard\n\n"
 
     for i, r in enumerate(rows, 1):
         text += f"{i}. {r[0]} — {r[1]} pts\n"
@@ -345,7 +425,8 @@ async def rewards(update, context):
 
 async def redeem(update, context):
 
-    user = update.message.from_user.username
+    user_obj = update.message.from_user
+    user = user_obj.username if user_obj.username else user_obj.first_name
 
     if not context.args:
         await update.message.reply_text(
@@ -353,7 +434,11 @@ async def redeem(update, context):
         )
         return
 
-    reward_id = int(context.args[0])
+    try:
+        reward_id = int(context.args[0])
+    except:
+        await update.message.reply_text("Please enter a valid reward number.")
+        return
 
     cursor.execute(
         "SELECT name,cost FROM rewards WHERE id=?",
@@ -401,13 +486,14 @@ async def redeem(update, context):
 
 async def results(update, context):
 
-    user = update.message.from_user.username
+    user_obj = update.message.from_user
+    user = user_obj.username if user_obj.username else user_obj.first_name
 
     if user not in ADMINS:
         return
 
     cursor.execute("SELECT SUM(points) FROM points")
-    total = cursor.fetchone()[0]
+    total = cursor.fetchone()[0] or 0
 
     cursor.execute("SELECT COUNT(*) FROM points")
     users = cursor.fetchone()[0]
@@ -423,7 +509,8 @@ async def results(update, context):
 
 async def addreward(update, context):
 
-    user = update.message.from_user.username
+    user_obj = update.message.from_user
+    user = user_obj.username if user_obj.username else user_obj.first_name
 
     if user not in ADMINS:
         return
@@ -438,9 +525,15 @@ async def addreward(update, context):
 
     name, cost = text.split("|")
 
+    try:
+        cost = int(cost)
+    except:
+        await update.message.reply_text("Points must be a number.")
+        return
+
     cursor.execute(
-        "INSERT INTO rewards(name,cost) VALUES (?,?)",
-        (name.strip(), int(cost))
+    "INSERT INTO rewards(name,cost) VALUES (?,?)",
+    (name.strip(), cost)
     )
 
     conn.commit()
@@ -454,12 +547,21 @@ async def addreward(update, context):
 
 async def removereward(update, context):
 
-    user = update.message.from_user.username
+    user_obj = update.message.from_user
+    user = user_obj.username if user_obj.username else user_obj.first_name
 
     if user not in ADMINS:
         return
 
-    reward_id = int(context.args[0])
+    if not context.args:
+        await update.message.reply_text("Usage: /removereward reward_id")
+        return
+
+    try:
+        reward_id = int(context.args[0])
+    except:
+        await update.message.reply_text("Please enter a valid reward ID.")
+        return
 
     cursor.execute(
         "DELETE FROM rewards WHERE id=?",
@@ -471,16 +573,6 @@ async def removereward(update, context):
     await update.message.reply_text("Reward removed")
 
 
-# -----------------------
-# WEEKLY RESET
-# -----------------------
-
-def weekly_reset():
-
-    cursor.execute("DELETE FROM recognitions")
-    conn.commit()
-
-    print("Weekly recognition reset complete")
 
 
 # -----------------------
@@ -489,10 +581,21 @@ def weekly_reset():
 
 def friday_leaderboard(app):
 
-    cursor.execute(
-        "SELECT user,points FROM points ORDER BY points DESC LIMIT 10"
-    )
+    today = datetime.now()
+    start_of_week = today - timedelta(days=today.weekday())
+    start_of_week = start_of_week.strftime("%Y-%m-%d")
 
+    cursor.execute(
+    """
+    SELECT receiver, SUM(points)
+    FROM recognitions
+    WHERE date >= ?
+    GROUP BY receiver
+    ORDER BY SUM(points) DESC
+    LIMIT 10
+    """,
+    (start_of_week,)
+    )
     rows = cursor.fetchall()
 
     text = "🏆 Weekly Leaderboard\n\n"
@@ -500,7 +603,16 @@ def friday_leaderboard(app):
     for i, r in enumerate(rows, 1):
         text += f"{i}. {r[0]} — {r[1]} pts\n"
 
-    print("Friday leaderboard generated")
+    import asyncio
+
+    app.create_task(
+        app.bot.send_message(
+            chat_id=-1003846532829,
+            text=text
+        )
+    )
+
+    print("Friday leaderboard sent")
 
 
 # -----------------------
@@ -510,7 +622,7 @@ def friday_leaderboard(app):
 def run_scheduler(app):
 
     schedule.every().friday.at("17:00").do(friday_leaderboard, app)
-    schedule.every().monday.at("00:01").do(weekly_reset)
+    
 
     while True:
         schedule.run_pending()
@@ -526,11 +638,12 @@ async def mypoints(update, context):
     name = user.username if user.username else user.first_name
 
     cursor.execute(
-        "SELECT COUNT(*) FROM recognitions WHERE receiver=?",
+        "SELECT points FROM points WHERE user=?",
         (name,)
     )
 
-    points = cursor.fetchone()[0]
+    row = cursor.fetchone()
+    points = row[0] if row else 0
 
     await update.message.reply_text(
         f"🏆 {name}, you currently have {points} recognition points!"
