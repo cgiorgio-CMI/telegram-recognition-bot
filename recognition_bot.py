@@ -314,7 +314,9 @@ async def recognize(update, context):
         await update.message.reply_text(
             f"👏 {receiver} received recognition!"
         )
-
+async def debug_message(update, context):
+    if update.message and update.message.text:
+        print("MESSAGE RECEIVED:", update.message.text)
 
 # -----------------------
 # RECOGNITION VIA 👏 REACTION
@@ -766,6 +768,10 @@ def main():
     logging.basicConfig(level=logging.INFO)
 
     app = Application.builder().token(BOT_TOKEN).build()
+
+    app.bot.delete_webhook(drop_pending_updates=True)
+
+    app.add_handler(MessageHandler(filters.ALL, debug_message), group=-1)
 
     app.add_handler(MessageHandler(filters.ALL, track_user), group=0)
 
