@@ -25,6 +25,13 @@ MAX_DAILY_RECOGNITIONS = 5
 
 MILESTONES = [10, 25, 50, 100, 200]
 
+STOP_WORDS = [
+    "thanks","thank","great","awesome","amazing",
+    "work","job","team","today","yesterday",
+    "for","the","a","to","and","everyone",
+    "good","nice","help","helping","support"
+]
+
 
 # -----------------------
 # GOOGLE SHEETS
@@ -300,18 +307,28 @@ async def reaction_recognition(update, context):
         receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
         receiver_id = receiver_user.id
 
-    # METHOD 2: @username in message
+    # METHOD 2: Detect @username OR plain name
     else:
-        for word in text.split():
+
+        words = text.replace("👏", "").split()
+
+        # Look for @username first
+        for word in words:
             if word.startswith("@"):
                 receiver = word.replace("@", "")
                 break
 
+        # If no @username, assume the LAST meaningful word is the name
+        if not receiver:
+            for word in reversed(words):
+                if word.lower() not in STOP_WORDS:
+                    receiver = word
+                    break
+
+    # Prevent self recognition
     if not receiver:
         return
 
-
-    # Prevent self recognition
     if receiver.lower() == sender.lower():
         return
 
@@ -672,7 +689,7 @@ def main():
     app.add_handler(CommandHandler("removereward", removereward))
     app.add_handler(CommandHandler("ping", ping))
 
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reaction_recognition))
+    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, reaction_recognition))
 
     scheduler_thread = threading.Thread(
         target=run_scheduler,
