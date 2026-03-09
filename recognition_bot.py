@@ -111,54 +111,77 @@ def add_point(user):
 
     conn.commit()
 
-
 # -----------------------
 # RECOGNITION BY COMMAND
 # -----------------------
 
 async def recognize(update, context):
 
-    sender = update.message.from_user.username
-    sender_id = update.message.from_user.id
+    sender_user = update.message.from_user
+    sender_id = sender_user.id
+    sender = sender_user.username if sender_user.username else sender_user.first_name
 
-    # Ensure a user was mentioned properly
-    if not update.message.entities or len(update.message.entities) < 2:
-        await update.message.reply_text(
-            "Usage: /recognize @username message"
-        )
-        return
+    # ----- METHOD 1: Reply recognition -----
+    if update.message.reply_to_message:
 
-    receiver_user = update.message.entities[1].user
+        receiver_user = update.message.reply_to_message.from_user
+        receiver_id = receiver_user.id
+        receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
 
-    # Prevent fake @username typing
-    if receiver_user is None:
-        await update.message.reply_text(
-            "❌ Please select the username from Telegram suggestions."
-        )
-        return
+        if sender_id == receiver_id:
+            await update.message.reply_text("❌ You cannot recognize yourself.")
+            return
 
-    receiver = receiver_user.username
-    receiver_id = receiver_user.id
+        if len(context.args) < 1:
+            await update.message.reply_text(
+                "❌ Please include a message.\n\nExample:\n/recognize Thanks for helping today!"
+            )
+            return
 
-    # Prevent self recognition
-    if sender_id == receiver_id:
-        await update.message.reply_text("❌ You cannot recognize yourself.")
-        return
+        message = " ".join(context.args)
 
+    # ----- METHOD 2: @username recognition -----
+    else:
+
+        if len(context.args) < 2:
+            await update.message.reply_text(
+                "Usage:\n"
+                "Reply to a message and type:\n"
+                "/recognize Thanks for helping!\n\n"
+                "OR\n\n"
+                "/recognize @username message"
+            )
+            return
+
+        # Prevent multiple mentions
+        if context.args[0].count("@") > 1:
+            await update.message.reply_text(
+                "❌ Please recognize only one person at a time."
+            )
+            return
+
+        receiver = context.args[0].replace("@", "")
+        message = " ".join(context.args[1:])
+
+        if receiver.lower() == sender.lower():
+            await update.message.reply_text("❌ You cannot recognize yourself.")
+            return
+
+        # Verify the user exists in the group
+        try:
+            member = await context.bot.get_chat_member(update.effective_chat.id, f"@{receiver}")
+        except:
+            await update.message.reply_text(
+                "❌ That user is not a member of this group."
+            )
+            return
+
+    # Daily recognition limit
     if daily_count(sender) >= MAX_DAILY_RECOGNITIONS:
         await update.message.reply_text(
             "Daily recognition limit reached (5)."
         )
         return
-
-    # Require a recognition message
-    if len(context.args) < 2:
-        await update.message.reply_text(
-            "❌ Please include a message.\n\nExample:\n/recognize @username Thanks for helping today!"
-        )
-        return
-
-    message = " ".join(context.args[1:])
 
     add_point(receiver)
 
@@ -199,8 +222,11 @@ async def reaction_recognition(update, context):
     if "👏" not in update.message.text:
         return
 
-    sender = update.message.from_user.username
-    receiver = update.message.reply_to_message.from_user.username
+    sender_user = update.message.from_user
+    receiver_user = update.message.reply_to_message.from_user
+
+    sender = sender_user.username if sender_user.username else sender_user.first_name
+    receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
 
     if sender == receiver:
         return
@@ -230,29 +256,6 @@ async def reaction_recognition(update, context):
     await update.message.reply_text(
         f"👏 {receiver} received recognition!"
     )
-
-# -----------------------
-# MY POINTS
-# -----------------------
-
-async def mypoints(update, context):
-
-    user = update.message.from_user.username
-
-    cursor.execute(
-        "SELECT points FROM points WHERE user=?",
-        (user,)
-    )
-
-    row = cursor.fetchone()
-
-    points = row[0] if row else 0
-
-    await update.message.reply_text(
-        f"You have {points} points"
-    )
-
-
 # -----------------------
 # LEADERBOARD
 # -----------------------
