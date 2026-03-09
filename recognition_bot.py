@@ -19,7 +19,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import os
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMINS = ["cassg13", "Kennedy", "cass"]
+ADMINS = ["cassg13", "kennedy", "cass", "sandra", "anne marie", "laura"]
 
 MAX_DAILY_RECOGNITIONS = 5
 
@@ -88,8 +88,62 @@ CREATE TABLE IF NOT EXISTS recognitions (
 )
 """)
 
+cursor.execute("""
+CREATE TABLE IF NOT EXISTS users(
+user_id INTEGER PRIMARY KEY,
+username TEXT,
+name TEXT
+)
+""")
+
 conn.commit()
 
+
+def register_user(user):
+
+    username = user.username.lower() if user.username else None
+    name = user.first_name
+
+    cursor.execute(
+        """
+        INSERT INTO users(user_id, username, name)
+        VALUES(?,?,?)
+        ON CONFLICT(user_id)
+        DO UPDATE SET
+        username=excluded.username,
+        name=excluded.name
+        """,
+        (user.id, username, name)
+    )
+
+    conn.commit()
+
+def find_user_in_text(text):
+    words = text.replace("👏", "").split()
+
+    for word in words:
+
+        clean = word.replace("@","").replace(",","").replace(".","").replace("!","").lower()
+
+        if clean in STOP_WORDS:
+            continue
+
+        cursor.execute(
+            """
+            SELECT user_id, name, username
+            FROM users
+            WHERE lower(name)=?
+            OR lower(username)=?
+            """,
+            (clean, clean)
+        )
+
+        user = cursor.fetchone()
+
+        if user:
+            return user
+
+    return None
 
 # -----------------------
 # DAILY LIMIT CHECK
@@ -150,8 +204,9 @@ def check_milestone(user):
 async def recognize(update, context):
 
     sender_user = update.message.from_user
+    register_user(sender_user)
     sender_id = sender_user.id
-    sender = sender_user.username if sender_user.username else sender_user.first_name
+    sender = sender_user.username.lower() if sender_user.username else sender_user.first_name
     message_id = update.message.message_id
 
     cursor.execute(
@@ -166,8 +221,10 @@ async def recognize(update, context):
     if update.message.reply_to_message:
 
         receiver_user = update.message.reply_to_message.from_user
-        receiver_id = receiver_user.id
+        register_user(receiver_user)
+
         receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
+        receiver_id = receiver_user.id
 
         if sender_id == receiver_id:
             await update.message.reply_text("❌ You cannot recognize yourself.")
@@ -209,7 +266,7 @@ async def recognize(update, context):
             return
 
     # Daily recognition limit
-    if daily_count(sender) >= MAX_DAILY_RECOGNITIONS:
+    if daily_count(sender) + 1 > MAX_DAILY_RECOGNITIONS:
         await update.message.reply_text(
             "Daily recognition limit reached (5)."
         )
@@ -280,7 +337,8 @@ async def reaction_recognition(update, context):
     points = max(1, min(text.count("👏"), 5))
 
     sender_user = update.message.from_user
-    sender = sender_user.username if sender_user.username else sender_user.first_name
+    register_user(sender_user)
+    sender = sender_user.username.lower() if sender_user.username else sender_user.first_name
     message_id = update.message.message_id
 
     # Prevent duplicate processing
@@ -306,30 +364,22 @@ async def reaction_recognition(update, context):
         receiver_user = update.message.reply_to_message.from_user
         receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
         receiver_id = receiver_user.id
+        register_user(receiver_user)
 
-    # METHOD 2: Detect @username OR plain name
+    # METHOD 2: smart user detection
     else:
 
-        words = text.replace("👏", "").split()
+        user = find_user_in_text(text)
 
-        # Look for @username first
-        for word in words:
-            if word.startswith("@"):
-                receiver = word.replace("@", "")
-                break
-
-        # If no @username, assume the LAST meaningful word is the name
-        if not receiver:
-            for word in reversed(words):
-                if word.lower() not in STOP_WORDS:
-                    receiver = word
-                    break
+        if user:
+            receiver_id = user[0]
+            receiver = user[1]
 
     # Prevent self recognition
     if not receiver:
         return
 
-    if receiver.lower() == sender.lower():
+    if receiver_id and receiver_id == sender_user.id:
         return
 
     # Give points
@@ -443,7 +493,7 @@ async def rewards(update, context):
 async def redeem(update, context):
 
     user_obj = update.message.from_user
-    user = user_obj.username if user_obj.username else user_obj.first_name
+    user = user_obj.username.lower() if user_obj.username else user_obj.first_name
 
     if not context.args:
         await update.message.reply_text(
@@ -504,7 +554,7 @@ async def redeem(update, context):
 async def results(update, context):
 
     user_obj = update.message.from_user
-    user = user_obj.username if user_obj.username else user_obj.first_name
+    user = user_obj.username.lower() if user_obj.username else user_obj.first_name
 
     if user not in ADMINS:
         return
@@ -527,7 +577,7 @@ async def results(update, context):
 async def addreward(update, context):
 
     user_obj = update.message.from_user
-    user = user_obj.username if user_obj.username else user_obj.first_name
+    user = user_obj.username.lower() if user_obj.username else user_obj.first_name
 
     if user not in ADMINS:
         return
@@ -565,7 +615,7 @@ async def addreward(update, context):
 async def removereward(update, context):
 
     user_obj = update.message.from_user
-    user = user_obj.username if user_obj.username else user_obj.first_name
+    user = user_obj.username.lower() if user_obj.username else user_obj.first_name
 
     if user not in ADMINS:
         return
@@ -651,8 +701,8 @@ def run_scheduler(app):
 # -----------------------
 async def mypoints(update, context):
 
-    user = update.message.from_user
-    name = user.username if user.username else user.first_name
+    user_obj = update.message.from_user
+    name = user_obj.username.lower() if user_obj.username else user_obj.first_name
 
     cursor.execute(
         "SELECT points FROM points WHERE user=?",
@@ -700,6 +750,11 @@ def main():
     scheduler_thread.start()
 
     print("Bot running...")
+
+    async def error_handler(update, context):
+        print("Error:", context.error)
+
+    app.add_error_handler(error_handler)
 
     app.run_polling()
 
