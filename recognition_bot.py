@@ -127,7 +127,7 @@ cursor.execute(
     (message_id,)
 )
 
-if cursor.fetchone():
+    if cursor.fetchone():
     return
 
     # ----- METHOD 1: Reply recognition -----
@@ -539,3 +539,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
