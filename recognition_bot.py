@@ -128,11 +128,12 @@ async def recognize(update, context):
 
     receiver = context.args[0].replace("@", "")
 
-    if sender == receiver:
-        await update.message.reply_text(
-            "❌ You cannot recognize yourself."
-        )
-        return
+sender_id = update.message.from_user.id
+receiver_id = user.id
+
+if sender_id == receiver_id:
+    await update.message.reply_text("❌ You cannot recognize yourself.")
+    return
 
     if daily_count(sender) >= MAX_DAILY_RECOGNITIONS:
         await update.message.reply_text(
