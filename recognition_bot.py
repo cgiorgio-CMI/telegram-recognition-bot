@@ -559,7 +559,7 @@ def main():
     app.add_handler(CommandHandler("removereward", removereward))
     app.add_handler(CommandHandler("ping", ping))
 
-    app.add_handler(MessageHandler(filters.TEXT, reaction_recognition))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reaction_recognition))
 
     scheduler_thread = threading.Thread(
         target=run_scheduler,
