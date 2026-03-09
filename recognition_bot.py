@@ -223,7 +223,7 @@ async def recognize(update, context):
         receiver_user = update.message.reply_to_message.from_user
         register_user(receiver_user)
 
-        receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
+        receiver = receiver_user.username.lower() if receiver_user.username else receiver_user.first_name
         receiver_id = receiver_user.id
 
         if sender_id == receiver_id:
@@ -362,7 +362,7 @@ async def reaction_recognition(update, context):
     if update.message.reply_to_message:
 
         receiver_user = update.message.reply_to_message.from_user
-        receiver = receiver_user.username if receiver_user.username else receiver_user.first_name
+        receiver = receiver_user.username.lower() if receiver_user.username else receiver_user.first_name
         receiver_id = receiver_user.id
         register_user(receiver_user)
 
@@ -374,6 +374,27 @@ async def reaction_recognition(update, context):
         if user:
             receiver_id = user[0]
             receiver = user[1]
+
+        # fallback detection
+        if not receiver:
+            words = text.replace("👏", "").split()
+
+            for w in words:
+                clean = w.lower().strip(",.!")
+
+                if clean in STOP_WORDS:
+                    continue
+
+                cursor.execute(
+                    "SELECT user_id FROM users WHERE lower(name)=? OR lower(username)=?",
+                    (clean, clean)
+                )
+
+                row = cursor.fetchone()
+
+                if row:
+                    receiver = clean
+                    break
 
     # Prevent self recognition
     if not receiver:
@@ -723,11 +744,32 @@ async def ping(update, context):
     await update.message.reply_text(
         f"✅ Bot working\nChat type: {chat_type}\nChat ID: {chat_id}"
     )
+
+async def track_user(update, context):
+
+    user = update.message.from_user
+
+    if "known_users" not in context.chat_data:
+        context.chat_data["known_users"] = []
+
+    for u in context.chat_data["known_users"]:
+        if u["id"] == user.id:
+            return
+
+    context.chat_data["known_users"].append({
+        "id": user.id,
+        "name": user.first_name
+    })
+    
 def main():
 
     logging.basicConfig(level=logging.INFO)
 
     app = Application.builder().token(BOT_TOKEN).build()
+
+    app.add_handler(MessageHandler(filters.ALL, track_user), group=0)
+
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reaction_recognition))
 
     app.add_handler(CommandHandler("recognize", recognize))
     app.add_handler(CommandHandler("mypoints", mypoints))
@@ -738,8 +780,6 @@ def main():
     app.add_handler(CommandHandler("addreward", addreward))
     app.add_handler(CommandHandler("removereward", removereward))
     app.add_handler(CommandHandler("ping", ping))
-
-    app.add_handler(MessageHandler(filters.ALL & ~filters.COMMAND, reaction_recognition))
 
     scheduler_thread = threading.Thread(
         target=run_scheduler,
