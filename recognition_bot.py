@@ -535,6 +535,14 @@ async def mypoints(update, context):
     await update.message.reply_text(
         f"🏆 {name}, you currently have {points} recognition points!"
     )
+    
+async def ping(update, context):
+    chat_type = update.message.chat.type
+    chat_id = update.message.chat.id
+
+    await update.message.reply_text(
+        f"✅ Bot working\nChat type: {chat_type}\nChat ID: {chat_id}"
+    )
 def main():
 
     logging.basicConfig(level=logging.INFO)
@@ -549,7 +557,7 @@ def main():
     app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("addreward", addreward))
     app.add_handler(CommandHandler("removereward", removereward))
-    application.add_handler(CommandHandler("ping", ping))
+    app.add_handler(CommandHandler("ping", ping))
 
     app.add_handler(MessageHandler(filters.TEXT, reaction_recognition))
 
@@ -568,3 +576,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
