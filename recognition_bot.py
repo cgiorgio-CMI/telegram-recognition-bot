@@ -119,25 +119,42 @@ def add_point(user):
 async def recognize(update, context):
 
     sender = update.message.from_user.username
+    sender_id = update.message.from_user.id
 
-    if len(context.args) < 1:
+    # Ensure a user was mentioned properly
+    if not update.message.entities or len(update.message.entities) < 2:
         await update.message.reply_text(
             "Usage: /recognize @username message"
         )
         return
 
-    receiver = context.args[0].replace("@", "")
+    receiver_user = update.message.entities[1].user
 
-sender_id = update.message.from_user.id
-receiver_id = user.id
+    # Prevent fake @username typing
+    if receiver_user is None:
+        await update.message.reply_text(
+            "❌ Please select the username from Telegram suggestions."
+        )
+        return
 
-if sender_id == receiver_id:
-    await update.message.reply_text("❌ You cannot recognize yourself.")
-    return
+    receiver = receiver_user.username
+    receiver_id = receiver_user.id
+
+    # Prevent self recognition
+    if sender_id == receiver_id:
+        await update.message.reply_text("❌ You cannot recognize yourself.")
+        return
 
     if daily_count(sender) >= MAX_DAILY_RECOGNITIONS:
         await update.message.reply_text(
             "Daily recognition limit reached (5)."
+        )
+        return
+
+    # Require a recognition message
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "❌ Please include a message.\n\nExample:\n/recognize @username Thanks for helping today!"
         )
         return
 
@@ -213,7 +230,6 @@ async def reaction_recognition(update, context):
     await update.message.reply_text(
         f"👏 {receiver} received recognition!"
     )
-
 
 # -----------------------
 # MY POINTS
