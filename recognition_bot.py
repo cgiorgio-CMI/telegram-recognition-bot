@@ -45,7 +45,7 @@ scope = [
 import os
 
 creds = ServiceAccountCredentials.from_json_keyfile_name(
-    os.environ["GOOGLE_CREDENTIALS"], scope
+    "credentials.json", scope
 )
 
 client = gspread.authorize(creds)
@@ -869,5 +869,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
