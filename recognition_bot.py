@@ -19,7 +19,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 import os
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
-ADMINS = ["cassg13", "kennedy", "cass", "sandra", "anne marie", "laura"]
+ADMINS = ["cassg13", "kennedy", "cass", "sandra", "annemarie", "laura"]
 
 MAX_DAILY_RECOGNITIONS = 5
 
@@ -123,7 +123,7 @@ def find_user_in_text(text):
 
     for word in words:
 
-        clean = word.replace("@","").replace(",","").replace(".","").replace("!","").lower()
+        clean = word.lower().strip("@,!.")
 
         if clean in STOP_WORDS:
             continue
@@ -328,6 +328,7 @@ async def reaction_recognition(update, context):
         return
 
     text = update.message.text
+    message_text = text
 
     # Only continue if clap emoji exists
     if "👏" not in text:
@@ -356,9 +357,6 @@ async def reaction_recognition(update, context):
         await update.message.reply_text("Daily recognition limit reached (5).")
         return
 
-    # Determine receiver
-    receiver = None
-    receiver_id = None
 
     # METHOD 1: reply recognition (BEST METHOD)
     if update.message.reply_to_message:
@@ -368,38 +366,93 @@ async def reaction_recognition(update, context):
         receiver_id = receiver_user.id
         register_user(receiver_user)
 
-    # METHOD 2: smart user detection
-    else:
+        receivers = {(receiver_id, receiver)}
 
-        user = find_user_in_text(text)
+    # METHOD 2: smart user detection (NATURAL LANGUAGE)
 
-        if user:
-            receiver_id = user[0]
-            receiver = user[1]
+    if not update.message.reply_to_message:
+        receivers = set()
 
-        # fallback detection
-        if not receiver:
-            words = text.replace("👏", "").split()
+    words = text.replace("👏", "").split()
 
-            for w in words:
-                clean = w.lower().strip(",.!")
+    for w in words:
 
-                if clean in STOP_WORDS:
-                    continue
+        clean = w.lower().strip("@,.!:;")
 
-                cursor.execute(
-                    "SELECT user_id FROM users WHERE lower(name)=? OR lower(username)=?",
-                    (clean, clean)
-                )
+        if clean in STOP_WORDS:
+            continue
 
-                row = cursor.fetchone()
+        cursor.execute(
+            """
+            SELECT user_id, name, username
+            FROM users
+            WHERE lower(name)=?
+            OR lower(username)=?
+            """,
+            (clean, clean)
+        )
 
-                if row:
-                    receiver = clean
-                    break
+        row = cursor.fetchone()
 
+        if row:
+            receivers.add((row[0], row[1]))
+
+    # If we found users
+    if receivers:
+
+        names = []
+
+        for r_id, r_name in receivers:
+
+            if r_id == sender_user.id:
+                continue
+
+            for _ in range(points):
+                add_point(r_name)
+
+            names.append(r_name)
+
+            today = datetime.now().strftime("%Y-%m-%d")
+
+            cursor.execute(
+            """
+            INSERT INTO recognitions(sender,sender_id,receiver,receiver_id,date,points,message_id)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                sender,
+                sender_user.id,
+                r_name,
+                r_id,
+                today,
+                points,
+                message_id
+            )
+            )
+
+            try:
+                recognitions_sheet.append_row([
+                    today,
+                    sender,
+                    r_name,
+                    message_text,
+                    points
+                ])
+            except Exception as e:
+                print("Google Sheets logging failed:", e)
+
+        conn.commit()
+
+        names_text = ", ".join(names)
+
+        await update.message.reply_text(
+            f"👏 {names_text} received {points} recognition point(s)!"
+        )
+
+        return
+        
     # Prevent self recognition
-    if not receiver:
+    if not receivers:
         return
 
     if receiver_id and receiver_id == sender_user.id:
@@ -445,7 +498,7 @@ async def reaction_recognition(update, context):
             today,
             sender,
             receiver,
-            f"{points} 👏",
+            message_text,
             points
         ])
     except Exception as e:
@@ -693,8 +746,8 @@ def friday_leaderboard(app):
     for i, r in enumerate(rows, 1):
         text += f"{i}. {r[0]} — {r[1]} pts\n"
 
-    import asyncio
 
+    import asyncio
     app.create_task(
         app.bot.send_message(
             chat_id=-1003846532829,
@@ -749,19 +802,27 @@ async def ping(update, context):
 
 async def track_user(update, context):
 
+    if not update.message:
+        return
+
     user = update.message.from_user
 
-    if "known_users" not in context.chat_data:
-        context.chat_data["known_users"] = []
+    register_user(user)
 
-    for u in context.chat_data["known_users"]:
-        if u["id"] == user.id:
-            return
+async def track_join(update, context):
 
-    context.chat_data["known_users"].append({
-        "id": user.id,
-        "name": user.first_name
-    })
+    if not update.message:
+        return
+
+    if not update.message.new_chat_members:
+        return
+
+    for member in update.message.new_chat_members:
+
+        register_user(member)
+
+        print("User registered from join:", member.first_name)
+
     
 def main():
 
@@ -769,11 +830,13 @@ def main():
 
     app = Application.builder().token(BOT_TOKEN).build()
 
-    app.bot.delete_webhook(drop_pending_updates=True)
+    app.add_handler(CommandHandler("ping", ping))
 
     app.add_handler(MessageHandler(filters.ALL, debug_message), group=-1)
 
     app.add_handler(MessageHandler(filters.ALL, track_user), group=0)
+
+    app.add_handler(MessageHandler(filters.StatusUpdate.NEW_CHAT_MEMBERS, track_join))
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reaction_recognition))
 
@@ -785,7 +848,7 @@ def main():
     app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("addreward", addreward))
     app.add_handler(CommandHandler("removereward", removereward))
-    app.add_handler(CommandHandler("ping", ping))
+    
 
     scheduler_thread = threading.Thread(
         target=run_scheduler,
@@ -795,14 +858,13 @@ def main():
 
     scheduler_thread.start()
 
-    print("Bot running...")
-
     async def error_handler(update, context):
         print("Error:", context.error)
 
     app.add_error_handler(error_handler)
 
-    app.run_polling()
+    print("Bot running...")
+    app.run_polling(drop_pending_updates=True)
 
 
 if __name__ == "__main__":
