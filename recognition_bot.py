@@ -236,8 +236,12 @@ async def reaction_recognition(update, context):
     sender_user = update.message.from_user
     sender = sender_user.username if sender_user.username else sender_user.first_name
 
-    if daily_count(sender) >= MAX_DAILY_RECOGNITIONS:
+    if daily_count(sender) + points > MAX_DAILY_RECOGNITIONS:
+        await update.message.reply_text(
+            "Daily recognition limit reached (5)."
+        )
         return
+        
 
     words = text.split()
 
