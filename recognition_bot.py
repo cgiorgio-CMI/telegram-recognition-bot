@@ -10,6 +10,15 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
+async def ping(update, context):
+    chat_type = update.message.chat.type
+    chat_id = update.message.chat.id
+    user = update.message.from_user.username
+
+    await update.message.reply_text(
+        f"✅ Bot is working!\nChat type: {chat_type}\nChat ID: {chat_id}\nUser: {user}"
+    )
+
 
 # -----------------------
 # SETTINGS
@@ -540,6 +549,7 @@ def main():
     app.add_handler(CommandHandler("results", results))
     app.add_handler(CommandHandler("addreward", addreward))
     app.add_handler(CommandHandler("removereward", removereward))
+    application.add_handler(CommandHandler("ping", ping))
 
     app.add_handler(MessageHandler(filters.TEXT, reaction_recognition))
 
@@ -558,4 +568,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
