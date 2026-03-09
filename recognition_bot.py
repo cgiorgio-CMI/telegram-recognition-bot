@@ -42,15 +42,15 @@ scope = [
     "https://www.googleapis.com/auth/drive"
 ]
 
-import json
+import os
 
+creds = ServiceAccountCredentials.from_json_keyfile_name(
+    os.environ["GOOGLE_CREDENTIALS"], scope
+)
 
-creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
-creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
 
 sheet = client.open("Recognition Tracker")
-
 recognitions_sheet = sheet.worksheet("Recognitions")
 
 
