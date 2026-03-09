@@ -15,7 +15,9 @@ from oauth2client.service_account import ServiceAccountCredentials
 # SETTINGS
 # -----------------------
 
-BOT_TOKEN = "8745044757:AAGmObzW1reBx82IAQR2_pgMFe2y2ofbySA"
+import os
+
+BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMINS = ["cassg13", "Kennedy", "cass"]
 
 MAX_DAILY_RECOGNITIONS = 5
