@@ -122,13 +122,13 @@ async def recognize(update, context):
     sender = sender_user.username if sender_user.username else sender_user.first_name
     message_id = update.message.message_id
 
-cursor.execute(
-    "SELECT 1 FROM recognitions WHERE message_id=?",
-    (message_id,)
-)
+    cursor.execute(
+        "SELECT 1 FROM recognitions WHERE message_id=?",
+        (message_id,)
+    )
 
     if cursor.fetchone():
-    return
+        return
 
     # ----- METHOD 1: Reply recognition -----
     if update.message.reply_to_message:
