@@ -398,6 +398,10 @@ async def reaction_recognition(update,context):
             receivers.add((u_id, u_name))
 
     if not receivers:
+
+        if sender_name.lower() in text.lower():
+            await update.message.reply_text("You can't give recognition to yourself 🙂")
+
         return
 
     if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
