@@ -8,6 +8,7 @@ import json
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
+import aioschedule  # make sure this is installed: pip install aioschedule
 
 # -----------------------
 # SETTINGS
@@ -30,6 +31,7 @@ scope = [
     "https://spreadsheets.google.com/feeds",
     "https://www.googleapis.com/auth/drive"
 ]
+
 creds_dict = json.loads(os.environ["GOOGLE_CREDENTIALS"])
 creds = ServiceAccountCredentials.from_json_keyfile_dict(creds_dict, scope)
 client = gspread.authorize(creds)
@@ -76,7 +78,7 @@ CREATE TABLE IF NOT EXISTS users(
 conn.commit()
 
 # -----------------------
-# DATABASE FUNCTIONS
+# DATABASE UTILITIES
 # -----------------------
 def register_user(user):
     username = user.username.lower() if user.username else None
@@ -117,7 +119,7 @@ def check_milestone(user):
     return None
 
 # -----------------------
-# COMMANDS
+# COMMAND HANDLERS
 # -----------------------
 async def ping(update, context):
     await update.message.reply_text("✅ Bot working!")
@@ -130,84 +132,13 @@ async def mypoints(update, context):
     points = row[0] if row else 0
     await update.message.reply_text(f"🏆 {name}, you have {points} points!")
 
-async def leaderboard(update, context):
-    cursor.execute("""
-        SELECT receiver, SUM(points) as pts
-        FROM recognitions
-        GROUP BY receiver
-        ORDER BY pts DESC
-        LIMIT 10
-    """)
-    rows = cursor.fetchall()
-    if not rows:
-        await update.message.reply_text("No points recorded yet.")
-        return
-    text = "🏆 Leaderboard\n\n" + "\n".join(f"{i+1}. {r[0]} — {r[1]} pts" for i, r in enumerate(rows))
-    await update.message.reply_text(text)
-
-async def rewards(update, context):
-    cursor.execute("SELECT id, name, cost FROM rewards")
-    rows = cursor.fetchall()
-    if not rows:
-        await update.message.reply_text("No rewards available.")
-        return
-    text = "🎁 Rewards:\n" + "\n".join(f"{r[0]}. {r[1]} — {r[2]} pts" for r in rows)
-    await update.message.reply_text(text)
-
-async def redeem(update, context):
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.message.reply_text("Usage: /redeem <reward_id>")
-        return
-    reward_id = int(context.args[0])
-    user_obj = update.message.from_user
-    name = user_obj.username.lower() if user_obj.username else user_obj.first_name
-    cursor.execute("SELECT points FROM points WHERE user=?", (name,))
-    row = cursor.fetchone()
-    user_points = row[0] if row else 0
-    cursor.execute("SELECT cost, name FROM rewards WHERE id=?", (reward_id,))
-    reward = cursor.fetchone()
-    if not reward:
-        await update.message.reply_text("Reward not found.")
-        return
-    cost, reward_name = reward
-    if user_points < cost:
-        await update.message.reply_text(f"Not enough points to redeem {reward_name}.")
-        return
-    cursor.execute("UPDATE points SET points=points-? WHERE user=?", (cost, name))
-    conn.commit()
-    await update.message.reply_text(f"✅ {reward_name} redeemed! You now have {user_points-cost} points.")
-
-async def addreward(update, context):
-    if update.message.from_user.username not in ADMINS:
-        await update.message.reply_text("❌ You are not authorized.")
-        return
-    if len(context.args) < 2 or not context.args[-1].isdigit():
-        await update.message.reply_text("Usage: /addreward <name> <cost>")
-        return
-    cost = int(context.args[-1])
-    name = " ".join(context.args[:-1])
-    cursor.execute("INSERT INTO rewards(name, cost) VALUES(?, ?)", (name, cost))
-    conn.commit()
-    await update.message.reply_text(f"✅ Reward {name} added for {cost} points.")
-
-async def removereward(update, context):
-    if update.message.from_user.username not in ADMINS:
-        await update.message.reply_text("❌ You are not authorized.")
-        return
-    if len(context.args) != 1 or not context.args[0].isdigit():
-        await update.message.reply_text("Usage: /removereward <reward_id>")
-        return
-    reward_id = int(context.args[0])
-    cursor.execute("DELETE FROM rewards WHERE id=?", (reward_id,))
-    conn.commit()
-    await update.message.reply_text(f"✅ Reward {reward_id} removed.")
-
 # -----------------------
-# RECOGNIZE & REACTIONS
+# RECOGNIZE COMMAND
 # -----------------------
 async def recognize(update, context):
     if not update.message:
         return
+
     sender_user = update.message.from_user
     register_user(sender_user)
     sender_id = sender_user.id
@@ -215,12 +146,12 @@ async def recognize(update, context):
     message_id = update.message.message_id
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Duplicate
+    # Prevent duplicate processing
     cursor.execute("SELECT 1 FROM recognitions WHERE message_id=?", (message_id,))
     if cursor.fetchone():
         return
 
-    # Receiver
+    # Determine receiver
     if update.message.reply_to_message:
         receiver_user = update.message.reply_to_message.from_user
         register_user(receiver_user)
@@ -229,14 +160,25 @@ async def recognize(update, context):
         if sender_id == receiver_id:
             await update.message.reply_text("❌ You cannot recognize yourself.")
             return
+
         if len(context.args) < 1:
-            await update.message.reply_text("❌ Include a message.\nExample: /recognize Thanks!")
+            await update.message.reply_text(
+                "❌ Please include a message.\n\nExample:\n/recognize Thanks for helping today!"
+            )
             return
+
         message = " ".join(context.args)
     else:
         if len(context.args) < 2:
-            await update.message.reply_text("Usage: /recognize @username message")
+            await update.message.reply_text(
+                "Usage:\n"
+                "Reply to a message and type:\n"
+                "/recognize Thanks for helping!\n\n"
+                "OR\n\n"
+                "/recognize @username message"
+            )
             return
+
         receiver = context.args[0].replace("@", "")
         receiver_id = None
         message = " ".join(context.args[1:])
@@ -244,6 +186,7 @@ async def recognize(update, context):
             await update.message.reply_text("❌ You cannot recognize yourself.")
             return
 
+    # Daily recognition limit
     if daily_count(sender) + 1 > MAX_DAILY_RECOGNITIONS:
         await update.message.reply_text("Daily recognition limit reached (5).")
         return
@@ -251,28 +194,40 @@ async def recognize(update, context):
     add_point(receiver)
     milestone = check_milestone(receiver)
 
-    # SQLite
-    cursor.execute("""
+    # Insert into SQLite
+    cursor.execute(
+        """
         INSERT INTO recognitions(sender, sender_id, receiver, receiver_id, date, points, message_id)
         VALUES (?, ?, ?, ?, ?, ?, ?)
-    """, (sender, sender_id, receiver, receiver_id, today, 1, message_id))
+        """,
+        (sender, sender_id, receiver, receiver_id, today, 1, message_id)
+    )
     conn.commit()
 
-    # Google Sheets
+    # Async Google Sheets logging
     try:
-        await asyncio.to_thread(recognitions_sheet.append_row, [today, sender, receiver, message, 1])
+        await asyncio.to_thread(
+            recognitions_sheet.append_row,
+            [today, sender, receiver, message, 1]
+        )
     except Exception as e:
         print("Google Sheets logging failed:", e)
 
-    # Reply
+    # Reply message
     if milestone:
-        await update.message.reply_text(f"👏 {receiver} received recognition!\n🔥 {receiver} just reached {milestone} points!")
+        await update.message.reply_text(
+            f"👏 {receiver} received recognition!\n\n🔥 {receiver} just reached {milestone} points!"
+        )
     else:
         await update.message.reply_text(f"👏 {receiver} received recognition!")
 
+# -----------------------
+# REACTION RECOGNITION
+# -----------------------
 async def reaction_recognition(update, context):
     if not update.message or not update.message.text:
         return
+
     text = update.message.text
     if "👏" not in text:
         return
@@ -282,15 +237,22 @@ async def reaction_recognition(update, context):
     sender = sender_user.username.lower() if sender_user.username else sender_user.first_name
     message_id = update.message.message_id
     today = datetime.now().strftime("%Y-%m-%d")
+
+    # Prevent duplicate processing
+    cursor.execute("SELECT 1 FROM recognitions WHERE message_id=?", (message_id,))
+    if cursor.fetchone():
+        return
+
     points = max(1, min(text.count("👏"), 5))
 
-    # Duplicate & daily limit
-    cursor.execute("SELECT 1 FROM recognitions WHERE message_id=?", (message_id,))
-    if cursor.fetchone() or daily_count(sender) + points > MAX_DAILY_RECOGNITIONS:
+    # Daily limit check
+    if daily_count(sender) + points > MAX_DAILY_RECOGNITIONS:
+        await update.message.reply_text("Daily recognition limit reached (5).")
         return
 
     receivers = set()
-    # Reply
+
+    # Method 1: Reply recognition
     if update.message.reply_to_message:
         receiver_user = update.message.reply_to_message.from_user
         receiver = receiver_user.username.lower() if receiver_user.username else receiver_user.first_name
@@ -298,37 +260,56 @@ async def reaction_recognition(update, context):
         register_user(receiver_user)
         receivers.add((receiver_id, receiver))
 
-    # Detect usernames in text
+    # Method 2: Smart user detection
     words = text.replace("👏", "").split()
     for w in words:
         clean = w.lower().strip("@,.!:;")
         if clean in STOP_WORDS:
             continue
-        cursor.execute("SELECT user_id, name FROM users WHERE lower(name)=? OR lower(username)=?", (clean, clean))
+
+        cursor.execute(
+            "SELECT user_id, name FROM users WHERE lower(name)=? OR lower(username)=?",
+            (clean, clean)
+        )
         row = cursor.fetchone()
         if row:
             receivers.add((row[0], row[1]))
 
     if not receivers:
-        return
+        return  # No valid receivers
 
     names = []
     for r_id, r_name in receivers:
         if r_id == sender_user.id:
             continue
+
         for _ in range(points):
             add_point(r_name)
+
         names.append(r_name)
-        cursor.execute("""
+
+        # Insert into SQLite
+        cursor.execute(
+            """
             INSERT INTO recognitions(sender, sender_id, receiver, receiver_id, date, points, message_id)
             VALUES (?, ?, ?, ?, ?, ?, ?)
-        """, (sender, sender_user.id, r_name, r_id, today, points, message_id))
+            """,
+            (sender, sender_user.id, r_name, r_id, today, points, message_id)
+        )
+
+        # Async Google Sheets logging
         try:
-            await asyncio.to_thread(recognitions_sheet.append_row, [today, sender, r_name, text, points])
+            await asyncio.to_thread(
+                recognitions_sheet.append_row,
+                [today, sender, r_name, text, points]
+            )
         except Exception as e:
             print("Google Sheets logging failed:", e)
+
     conn.commit()
-    await update.message.reply_text(f"👏 {', '.join(names)} received {points} recognition point(s)!")
+
+    names_text = ", ".join(names)
+    await update.message.reply_text(f"👏 {names_text} received {points} recognition point(s)!")
 
 # -----------------------
 # FRIDAY LEADERBOARD
@@ -337,29 +318,43 @@ async def friday_leaderboard(app):
     today = datetime.now()
     start_of_week = today - timedelta(days=today.weekday())
     start_of_week = start_of_week.strftime("%Y-%m-%d")
-    cursor.execute("""
+
+    cursor.execute(
+        """
         SELECT receiver, SUM(points)
         FROM recognitions
         WHERE date >= ?
         GROUP BY receiver
         ORDER BY SUM(points) DESC
         LIMIT 10
-    """, (start_of_week,))
+        """,
+        (start_of_week,)
+    )
     rows = cursor.fetchall()
-    text = "🏆 Weekly Leaderboard\n\n" + "\n".join(f"{i+1}. {r[0]} — {r[1]} pts" for i, r in enumerate(rows))
+
+    text = "🏆 Weekly Leaderboard\n\n"
+    for i, r in enumerate(rows, 1):
+        text += f"{i}. {r[0]} — {r[1]} pts\n"
+
     try:
-        await app.bot.send_message(chat_id=-1003846532829, text=text)
+        await app.bot.send_message(
+            chat_id=-1003846532829,  # replace with your actual chat_id
+            text=text
+        )
     except Exception as e:
         print("Failed to send leaderboard:", e)
+
     print("Friday leaderboard sent")
 
-async def run_scheduler(app):
+# -----------------------
+# SCHEDULER LOOP
+# -----------------------
+async def scheduler_loop(app):
+    aioschedule.every().friday.at("17:00").do(lambda: asyncio.create_task(friday_leaderboard(app)))
+
     while True:
-        now = datetime.now()
-        if now.weekday() == 4 and now.hour == 17 and now.minute == 0:
-            await friday_leaderboard(app)
-            await asyncio.sleep(60)
-        await asyncio.sleep(20)
+        await aioschedule.run_pending()
+        await asyncio.sleep(60)
 
 # -----------------------
 # MAIN
@@ -370,33 +365,24 @@ def main():
 
     # Command handlers
     app.add_handler(CommandHandler("ping", ping))
-    app.add_handler(CommandHandler("mypoints", mypoints))
-    app.add_handler(CommandHandler("leaderboard", leaderboard))
-    app.add_handler(CommandHandler("rewards", rewards))
-    app.add_handler(CommandHandler("redeem", redeem))
-    app.add_handler(CommandHandler("addreward", addreward))
-    app.add_handler(CommandHandler("removereward", removereward))
     app.add_handler(CommandHandler("recognize", recognize))
-
-    # Reaction recognition
+    app.add_handler(CommandHandler("mypoints", mypoints))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reaction_recognition))
 
-    # Error handler
-    async def error_handler(update, context):
-        print("Error:", context.error)
-    app.add_error_handler(error_handler)
-
-    # Track users & debug
+    # Debug
     async def debug_message(update, context):
         if update.message and update.message.text:
             print("MESSAGE RECEIVED:", update.message.text)
     app.add_handler(MessageHandler(filters.ALL, debug_message), group=-1)
 
-    async def start():
-        asyncio.create_task(run_scheduler(app))
-        await app.run_polling(drop_pending_updates=True)
+    # Start scheduler after app initialization
+    async def start_tasks():
+        asyncio.create_task(scheduler_loop(app))
+    app.post_init = start_tasks
 
-    asyncio.run(start())
+    # Run the bot
+    print("Bot running...")
+    app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
     main()
