@@ -8,7 +8,6 @@ import json
 from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
-import aioschedule  # make sure this is installed: pip install aioschedule
 
 # -----------------------
 # SETTINGS
@@ -78,7 +77,7 @@ CREATE TABLE IF NOT EXISTS users(
 conn.commit()
 
 # -----------------------
-# DATABASE UTILITIES
+# HELPER FUNCTIONS
 # -----------------------
 def register_user(user):
     username = user.username.lower() if user.username else None
@@ -146,7 +145,7 @@ async def recognize(update, context):
     message_id = update.message.message_id
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Prevent duplicate processing
+    # Prevent duplicate
     cursor.execute("SELECT 1 FROM recognitions WHERE message_id=?", (message_id,))
     if cursor.fetchone():
         return
@@ -166,7 +165,6 @@ async def recognize(update, context):
                 "❌ Please include a message.\n\nExample:\n/recognize Thanks for helping today!"
             )
             return
-
         message = " ".join(context.args)
     else:
         if len(context.args) < 2:
@@ -178,7 +176,6 @@ async def recognize(update, context):
                 "/recognize @username message"
             )
             return
-
         receiver = context.args[0].replace("@", "")
         receiver_id = None
         message = " ".join(context.args[1:])
@@ -194,7 +191,6 @@ async def recognize(update, context):
     add_point(receiver)
     milestone = check_milestone(receiver)
 
-    # Insert into SQLite
     cursor.execute(
         """
         INSERT INTO recognitions(sender, sender_id, receiver, receiver_id, date, points, message_id)
@@ -213,7 +209,7 @@ async def recognize(update, context):
     except Exception as e:
         print("Google Sheets logging failed:", e)
 
-    # Reply message
+    # Reply
     if milestone:
         await update.message.reply_text(
             f"👏 {receiver} received recognition!\n\n🔥 {receiver} just reached {milestone} points!"
@@ -227,7 +223,6 @@ async def recognize(update, context):
 async def reaction_recognition(update, context):
     if not update.message or not update.message.text:
         return
-
     text = update.message.text
     if "👏" not in text:
         return
@@ -238,21 +233,15 @@ async def reaction_recognition(update, context):
     message_id = update.message.message_id
     today = datetime.now().strftime("%Y-%m-%d")
 
-    # Prevent duplicate processing
+    # Prevent duplicate
     cursor.execute("SELECT 1 FROM recognitions WHERE message_id=?", (message_id,))
     if cursor.fetchone():
         return
 
     points = max(1, min(text.count("👏"), 5))
-
-    # Daily limit check
-    if daily_count(sender) + points > MAX_DAILY_RECOGNITIONS:
-        await update.message.reply_text("Daily recognition limit reached (5).")
-        return
-
     receivers = set()
 
-    # Method 1: Reply recognition
+    # Reply recognition
     if update.message.reply_to_message:
         receiver_user = update.message.reply_to_message.from_user
         receiver = receiver_user.username.lower() if receiver_user.username else receiver_user.first_name
@@ -260,13 +249,11 @@ async def reaction_recognition(update, context):
         register_user(receiver_user)
         receivers.add((receiver_id, receiver))
 
-    # Method 2: Smart user detection
-    words = text.replace("👏", "").split()
+    # Smart detection
+    words = text.replace("👏","").split()
     for w in words:
         clean = w.lower().strip("@,.!:;")
-        if clean in STOP_WORDS:
-            continue
-
+        if clean in STOP_WORDS: continue
         cursor.execute(
             "SELECT user_id, name FROM users WHERE lower(name)=? OR lower(username)=?",
             (clean, clean)
@@ -275,20 +262,14 @@ async def reaction_recognition(update, context):
         if row:
             receivers.add((row[0], row[1]))
 
-    if not receivers:
-        return  # No valid receivers
+    if not receivers: return
 
     names = []
     for r_id, r_name in receivers:
-        if r_id == sender_user.id:
-            continue
-
-        for _ in range(points):
-            add_point(r_name)
-
+        if r_id == sender_user.id: continue
+        for _ in range(points): add_point(r_name)
         names.append(r_name)
 
-        # Insert into SQLite
         cursor.execute(
             """
             INSERT INTO recognitions(sender, sender_id, receiver, receiver_id, date, points, message_id)
@@ -297,7 +278,6 @@ async def reaction_recognition(update, context):
             (sender, sender_user.id, r_name, r_id, today, points, message_id)
         )
 
-        # Async Google Sheets logging
         try:
             await asyncio.to_thread(
                 recognitions_sheet.append_row,
@@ -307,9 +287,7 @@ async def reaction_recognition(update, context):
             print("Google Sheets logging failed:", e)
 
     conn.commit()
-
-    names_text = ", ".join(names)
-    await update.message.reply_text(f"👏 {names_text} received {points} recognition point(s)!")
+    await update.message.reply_text(f"👏 {', '.join(names)} received {points} recognition point(s)!")
 
 # -----------------------
 # FRIDAY LEADERBOARD
@@ -337,24 +315,20 @@ async def friday_leaderboard(app):
         text += f"{i}. {r[0]} — {r[1]} pts\n"
 
     try:
-        await app.bot.send_message(
-            chat_id=-1003846532829,  # replace with your actual chat_id
-            text=text
-        )
+        await app.bot.send_message(chat_id=-1003846532829, text=text)
     except Exception as e:
         print("Failed to send leaderboard:", e)
 
-    print("Friday leaderboard sent")
-
 # -----------------------
-# SCHEDULER LOOP
+# SIMPLE SCHEDULER LOOP
 # -----------------------
 async def scheduler_loop(app):
-    aioschedule.every().friday.at("17:00").do(lambda: asyncio.create_task(friday_leaderboard(app)))
-
     while True:
-        await aioschedule.run_pending()
-        await asyncio.sleep(60)
+        now = datetime.now()
+        if now.weekday() == 4 and now.hour == 17 and now.minute == 0:  # Friday 17:00
+            await friday_leaderboard(app)
+            await asyncio.sleep(60)  # prevent double send
+        await asyncio.sleep(30)
 
 # -----------------------
 # MAIN
@@ -365,23 +339,22 @@ def main():
 
     # Command handlers
     app.add_handler(CommandHandler("ping", ping))
-    app.add_handler(CommandHandler("recognize", recognize))
     app.add_handler(CommandHandler("mypoints", mypoints))
+    app.add_handler(CommandHandler("recognize", recognize))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reaction_recognition))
 
-    # Debug
-    async def debug_message(update, context):
-        if update.message and update.message.text:
-            print("MESSAGE RECEIVED:", update.message.text)
-    app.add_handler(MessageHandler(filters.ALL, debug_message), group=-1)
+    # Error handler
+    async def error_handler(update, context):
+        print("Error:", context.error)
+    app.add_error_handler(error_handler)
 
-    # Start scheduler after app initialization
-    async def start_tasks():
+    # Scheduler
+    async def start_tasks(app):
         asyncio.create_task(scheduler_loop(app))
+
     app.post_init = start_tasks
 
     # Run the bot
-    print("Bot running...")
     app.run_polling(drop_pending_updates=True)
 
 if __name__ == "__main__":
