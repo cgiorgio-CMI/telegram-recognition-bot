@@ -350,48 +350,56 @@ async def reaction_recognition(update,context):
 
         for entity in update.message.entities:
 
-            if entity.type=="mention":
+            # typed @username
+            if entity.type == "mention":
 
-                mention=text[entity.offset:entity.offset+entity.length]
+                mention = text[entity.offset:entity.offset + entity.length]
 
-                clean=normalize_name(mention)
+                clean = normalize_name(mention)
 
                 cursor.execute("""
                 SELECT user_id,name FROM users
                 WHERE username=?
                 """,(clean,))
 
-                row=cursor.fetchone()
+                row = cursor.fetchone()
 
                 if row:
+                    receivers.add((row[0], row[1]))
 
-                    receivers.add((row[0],row[1]))
+            # clicked name mention (hyperlink)
+            elif entity.type == "text_mention":
 
-    words=text.replace("👏","").split()
+                user = entity.user
 
-    for w in words:
+                register_user(user)
 
-        clean=normalize_name(w)
+                if user.id != sender_id:
+                    receivers.add((user.id, user.first_name))
 
-        if clean in STOP_WORDS:
-            continue
+    clean_text = text.replace("👏","").lower()
 
-        cursor.execute("""
-        SELECT user_id,name
-        FROM users
-        WHERE normalized_name=? OR username=?
-        """,(clean,clean))
+    cursor.execute("""
+    SELECT user_id,name,normalized_name,username
+    FROM users
+    """)
 
-        row=cursor.fetchone()
+    users = cursor.fetchall()
 
-        if row:
+    for u_id, u_name, norm_name, username in users:
 
-            receivers.add((row[0],row[1]))
+        if norm_name and norm_name in clean_text:
+            if u_id != sender_id:
+                receivers.add((u_id, u_name))
+
+        elif username and username in clean_text:
+            if u_id != sender_id:
+                receivers.add((u_id, u_name))
 
     if not receivers:
         return
 
-    if daily_count(sender_id)+1>MAX_DAILY_RECOGNITIONS:
+    if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
 
         await update.message.reply_text("Daily recognition limit reached (5).")
 
@@ -430,7 +438,11 @@ async def reaction_recognition(update,context):
     if not names:
         return
 
-    milestone=check_milestone(receivers.pop()[0])
+    milestone=None
+    for r_id,_ in receivers:
+        milestone=check_milestone(r_id)
+        if milestone:
+            break
 
     if milestone:
 
