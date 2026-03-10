@@ -388,13 +388,14 @@ async def reaction_recognition(update,context):
 
     for u_id, u_name, norm_name, username in users:
 
-        if norm_name and norm_name in clean_text:
-            if u_id != sender_id:
-                receivers.add((u_id, u_name))
+        if u_id == sender_id:
+            continue
 
-        elif username and username in clean_text:
-            if u_id != sender_id:
-                receivers.add((u_id, u_name))
+        if norm_name and f" {norm_name} " in f" {clean_text} ":
+            receivers.add((u_id, u_name))
+
+        elif username and f" @{username} " in f" {text.lower()} ":
+            receivers.add((u_id, u_name))
 
     if not receivers:
         return
