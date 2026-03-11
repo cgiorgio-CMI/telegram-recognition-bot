@@ -5,7 +5,8 @@ import asyncio
 import os
 import json
 
-from telegram.ext import Application, CommandHandler, MessageHandler, filters
+from telegram.ext import Application, CommandHandler, MessageHandler, MessageReactionHandler, filters
+from telegram import ReactionTypeEmoji
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -45,7 +46,6 @@ sheet = client.open("Recognition Tracker")
 
 recognitions_sheet = sheet.worksheet("Recognitions")
 
-# NEW SHEETS
 rewards_sheet = sheet.worksheet("Rewards")
 redemptions_sheet = sheet.worksheet("Redemptions")
 
@@ -209,73 +209,58 @@ def deduct_points(user_id, cost):
 # -----------------------
 
 async def ping(update,context):
-
     await update.message.reply_text("✅ Bot working!")
 
 async def mypoints(update,context):
 
     user=update.message.from_user
-
     register_user(user)
 
     cursor.execute("SELECT points FROM points WHERE user_id=?",(user.id,))
-
     row=cursor.fetchone()
 
     pts=row[0] if row else 0
 
     await update.message.reply_text(f"🏆 {user.first_name}, you have {pts} points!")
 
-# NEW COMMAND
 async def rewards(update,context):
 
     rewards_list = get_rewards()
 
     if not rewards_list:
-
         await update.message.reply_text("No rewards available.")
-
         return
 
     text = "🎁 Available Rewards\n\n"
 
     for r in rewards_list:
-
         text += f"{r['id']}. {r['name']} — {r['cost']} pts\n"
 
     text += "\nUse /redeem <id>"
 
     await update.message.reply_text(text)
 
-# NEW COMMAND
 async def redeem(update,context):
 
     user = update.message.from_user
 
     if not context.args:
-
         await update.message.reply_text("Usage: /redeem <reward id>")
-
         return
 
     reward_id = int(context.args[0])
 
     rewards_list = get_rewards()
-
     reward = next((r for r in rewards_list if r["id"] == reward_id), None)
 
     if not reward:
-
         await update.message.reply_text("Reward not found.")
-
         return
 
     user_points = get_user_points(user.id)
 
     if user_points < reward["cost"]:
-
         await update.message.reply_text("Not enough points.")
-
         return
 
     deduct_points(user.id, reward["cost"])
@@ -283,14 +268,11 @@ async def redeem(update,context):
     today = datetime.now().strftime("%Y-%m-%d")
 
     try:
-
         await asyncio.to_thread(
             redemptions_sheet.append_row,
             [today, user.first_name, reward["name"], reward["cost"]]
         )
-
     except Exception as e:
-
         print("Redemption log error:", e)
 
     await update.message.reply_text(
@@ -302,13 +284,11 @@ async def redeem(update,context):
 # -----------------------
 
 async def learn_users(update,context):
-
     if update.message and update.message.from_user:
-
         register_user(update.message.from_user)
 
 # -----------------------
-# RECOGNITION ENGINE
+# MESSAGE 🌱 RECOGNITION
 # -----------------------
 
 async def reaction_recognition(update,context):
@@ -318,148 +298,105 @@ async def reaction_recognition(update,context):
 
     text=update.message.text
 
-    if "👏" not in text:
+    if "🌱" not in text:
         return
 
     sender_user=update.message.from_user
-
     register_user(sender_user)
 
     sender_id=sender_user.id
     sender_name=sender_user.first_name
 
     today=datetime.now().strftime("%Y-%m-%d")
-
     message_id=update.message.message_id
 
-    points=max(1,min(text.count("👏"),5))
+    points=max(1,min(text.count("🌱"),5))
 
     receivers=set()
 
     if update.message.reply_to_message:
 
         r=update.message.reply_to_message.from_user
-
         register_user(r)
 
         if r.id!=sender_id:
-
             receivers.add((r.id,r.first_name))
 
-    if update.message.entities:
-
-        for entity in update.message.entities:
-
-            # typed @username
-            if entity.type == "mention":
-
-                mention = text[entity.offset:entity.offset + entity.length]
-
-                clean = normalize_name(mention)
-
-                cursor.execute("""
-                SELECT user_id,name FROM users
-                WHERE username=?
-                """,(clean,))
-
-                row = cursor.fetchone()
-
-                if row:
-                    receivers.add((row[0], row[1]))
-
-            # clicked name mention (hyperlink)
-            elif entity.type == "text_mention":
-
-                user = entity.user
-
-                register_user(user)
-
-                if user.id != sender_id:
-                    receivers.add((user.id, user.first_name))
-
-    clean_text = text.replace("👏","").lower()
-
-    cursor.execute("""
-    SELECT user_id,name,normalized_name,username
-    FROM users
-    """)
-
-    users = cursor.fetchall()
-
-    for u_id, u_name, norm_name, username in users:
-
-        if u_id == sender_id:
-            continue
-
-        if norm_name and f" {norm_name} " in f" {clean_text} ":
-            receivers.add((u_id, u_name))
-
-        elif username and f" @{username} " in f" {text.lower()} ":
-            receivers.add((u_id, u_name))
-
     if not receivers:
-
-        if sender_name.lower() in text.lower():
-            await update.message.reply_text("You can't give recognition to yourself 🙂")
-
         return
 
     if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
-
         await update.message.reply_text("Daily recognition limit reached (5).")
-
         return
 
     names=[]
 
     for r_id,r_name in receivers:
 
-        if r_id==sender_id:
-            continue
-
         add_point(r_id,r_name,points)
 
         cursor.execute("""
-        INSERT INTO recognitions
+        INSERT OR IGNORE INTO recognitions
         (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
         VALUES(?,?,?,?,?,?,?)
         """,(sender_id,sender_name,r_id,r_name,today,points,message_id))
 
         names.append(r_name)
 
-        try:
-
-            await asyncio.to_thread(
-                recognitions_sheet.append_row,
-                [today,sender_name,r_name,text,points]
-            )
-
-        except Exception as e:
-
-            print("Sheets error:",e)
-
     conn.commit()
 
-    if not names:
+    await update.message.reply_text(
+        f"🌱 {', '.join(names)} received {points} recognition point(s)!"
+    )
+
+# -----------------------
+# 🌱 REACTION RECOGNITION (NEW)
+# -----------------------
+
+async def reaction_event(update, context):
+
+    reaction = update.message_reaction
+
+    user = reaction.user
+    message = reaction.message
+
+    if not user or not message:
         return
 
-    milestone=None
-    for r_id,_ in receivers:
-        milestone=check_milestone(r_id)
-        if milestone:
-            break
+    if not reaction.new_reaction:
+        return
 
-    if milestone:
+    emoji_found = False
 
-        await update.message.reply_text(
-        f"👏 {', '.join(names)} received recognition!\n\n🔥 {names[0]} reached {milestone} points!"
-        )
+    for r in reaction.new_reaction:
+        if isinstance(r, ReactionTypeEmoji) and r.emoji == "🌱":
+            emoji_found = True
 
-    else:
+    if not emoji_found:
+        return
 
-        await update.message.reply_text(
-        f"👏 {', '.join(names)} received {points} recognition point(s)!"
-        )
+    sender = user
+    receiver = message.from_user
+
+    if not receiver or sender.id == receiver.id:
+        return
+
+    register_user(sender)
+    register_user(receiver)
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    add_point(receiver.id, receiver.first_name, 1)
+
+    unique_message_id = message.message_id * 100000 + sender.id
+
+    cursor.execute("""
+    INSERT OR IGNORE INTO recognitions
+    (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
+    VALUES(?,?,?,?,?,?,?)
+    """,(sender.id,sender.first_name,receiver.id,receiver.first_name,today,1,unique_message_id))
+
+    conn.commit()
 
 # -----------------------
 # WEEKLY LEADERBOARD
@@ -468,9 +405,7 @@ async def reaction_recognition(update,context):
 async def friday_leaderboard(app):
 
     today=datetime.now()
-
     start=today-timedelta(days=today.weekday())
-
     start=start.strftime("%Y-%m-%d")
 
     cursor.execute("""
@@ -487,18 +422,14 @@ async def friday_leaderboard(app):
     text="🏆 Weekly Leaderboard\n\n"
 
     for i,r in enumerate(rows,1):
-
         text+=f"{i}. {r[0]} — {r[1]} pts\n"
 
     try:
-
         await app.bot.send_message(
         chat_id=-1003846532829,
         text=text
         )
-
     except Exception as e:
-
         print("Leaderboard error:",e)
 
 async def scheduler_loop(app):
@@ -510,7 +441,6 @@ async def scheduler_loop(app):
         if now.weekday()==4 and now.hour==17 and now.minute==0:
 
             await friday_leaderboard(app)
-
             await asyncio.sleep(60)
 
         await asyncio.sleep(30)
@@ -534,8 +464,9 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,reaction_recognition),group=1)
 
-    async def start_tasks(application):
+    app.add_handler(MessageReactionHandler(reaction_event))
 
+    async def start_tasks(application):
         asyncio.create_task(scheduler_loop(application))
 
     app.post_init=start_tasks
