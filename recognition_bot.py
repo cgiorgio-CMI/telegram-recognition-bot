@@ -524,11 +524,16 @@ def main():
 
     job_queue = app.job_queue
 
-    job_queue.run_daily(
-        friday_leaderboard,
-        time=datetime.strptime("17:00","%H:%M").time(),
-        days=(4,)
-    )
+    # --- crash-proof scheduler ---
+    if job_queue:
+        job_queue.run_daily(
+            friday_leaderboard,
+            time=datetime.strptime("17:00","%H:%M").time(),
+            days=(4,)
+        )
+    else:
+        print("JobQueue not available — Friday leaderboard disabled")
+    # --- end fix ---
 
     app.run_polling(drop_pending_updates=True)
 
