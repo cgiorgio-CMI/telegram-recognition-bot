@@ -47,6 +47,7 @@ recognitions_sheet = sheet.worksheet("Recognitions")
 
 rewards_sheet = sheet.worksheet("Rewards")
 redemptions_sheet = sheet.worksheet("Redemptions")
+team_sheet = sheet.worksheet("Team")
 
 # -----------------------
 # DATABASE
@@ -139,27 +140,9 @@ def daily_count(user_id):
 
     return cursor.fetchone()[0]
 
-def check_milestone(user_id):
-
-    cursor.execute("""
-    SELECT SUM(points)
-    FROM recognitions
-    WHERE receiver_id=?
-    """,(user_id,))
-
-    row=cursor.fetchone()
-
-    points=row[0] if row and row[0] else 0
-
-    previous=points-1
-
-    for m in MILESTONES:
-        if points>=m and previous<m:
-            return m
-
-    return None
-
-# ---- NAME MATCH FIX ----
+# -----------------------
+# NAME MATCH FIX
+# -----------------------
 
 def find_sheet_name_match(word):
 
@@ -183,7 +166,164 @@ def find_sheet_name_match(word):
     return matches
 
 # -----------------------
-# REWARD HELPERS
+# TEAM SHEET LOOKUP
+# -----------------------
+
+def find_team_name_match(word):
+
+    matches = []
+
+    try:
+        rows = team_sheet.get_all_records()
+
+        for r in rows:
+
+            name = str(r["Name"]).strip()
+
+            parts = name.lower().split()
+
+            if word.lower() in parts:
+                matches.append(name)
+
+    except Exception as e:
+        print("Team sheet lookup error:", e)
+
+    return matches
+
+# -----------------------
+# COMMANDS
+# -----------------------
+
+async def ping(update,context):
+    await update.message.reply_text("✅ Bot working!")
+
+async def mypoints(update,context):
+
+    user=update.message.from_user
+    register_user(user)
+
+    cursor.execute("SELECT points FROM points WHERE user_id=?",(user.id,))
+    row=cursor.fetchone()
+
+    pts=row[0] if row else 0
+
+    await update.message.reply_text(f"🏆 {user.first_name}, you have {pts} points!")
+
+# -----------------------
+# AUTO LEARN USERS
+# -----------------------
+
+async def learn_users(update,context):
+
+    if not update.message or not update.message.from_user:
+        return
+
+    register_user(update.message.from_user)
+
+# -----------------------
+# RECOGNITION ENGINE
+# -----------------------
+
+async def reaction_recognition(update,context):
+
+    if not update.message or not update.message.text:
+        return
+
+    text=update.message.text
+
+    if "🌱" not in text:
+        return
+
+    sender_user=update.message.from_user
+    register_user(sender_user)
+
+    sender_id=sender_user.id
+    sender_name=sender_user.first_name
+
+    today=datetime.now().strftime("%Y-%m-%d")
+    message_id=update.message.message_id
+
+    points=max(1,min(text.count("🌱"),5))
+
+    receivers=set()
+    matched_names=set()
+
+    clean_text = text.replace("🌱","").lower()
+    words = clean_text.split()
+
+    # MATCH USERS FROM DATABASE (telegram users)
+    cursor.execute("SELECT user_id,name,normalized_name FROM users")
+    users = cursor.fetchall()
+
+    for uid,name,norm in users:
+
+        if norm in words and norm not in matched_names:
+
+            receivers.add((uid,name))
+            matched_names.add(norm)
+
+    # MATCH TEAM SHEET
+    for w in words:
+
+        team_matches = find_team_name_match(w)
+
+        for team_name in team_matches:
+
+            if w not in matched_names:
+
+                receivers.add((0, team_name))
+                matched_names.add(w)
+
+    # MATCH RECOGNITION SHEET
+    for w in words:
+
+        sheet_matches = find_sheet_name_match(w)
+
+        for sheet_name in sheet_matches:
+
+            if w not in matched_names:
+
+                receivers.add((0, sheet_name))
+                matched_names.add(w)
+
+    if not receivers:
+        return
+
+    if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
+
+        await update.message.reply_text("Daily recognition limit reached (5).")
+        return
+
+    names=[]
+
+    for r_id,r_name in receivers:
+
+        add_point(r_id,r_name,points)
+
+        cursor.execute("""
+        INSERT OR IGNORE INTO recognitions
+        (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
+        VALUES(?,?,?,?,?,?,?)
+        """,(sender_id,sender_name,r_id,r_name,today,points,message_id))
+
+        names.append(r_name)
+
+        try:
+            await asyncio.to_thread(
+                recognitions_sheet.append_row,
+                [today, sender_name, r_name, text, points]
+            )
+        except Exception as e:
+            print("Sheet log error:", e)
+
+    conn.commit()
+
+    reply_text = f"🌱 {', '.join(names)} received {points} recognition point(s)!"
+
+    await update.message.reply_text(reply_text)
+
+# -----------------------
+# REWARDS
 # -----------------------
 
 def get_rewards():
@@ -221,25 +361,6 @@ def deduct_points(user_id, cost):
     """, (cost, user_id))
 
     conn.commit()
-
-# -----------------------
-# COMMANDS
-# -----------------------
-
-async def ping(update,context):
-    await update.message.reply_text("✅ Bot working!")
-
-async def mypoints(update,context):
-
-    user=update.message.from_user
-    register_user(user)
-
-    cursor.execute("SELECT points FROM points WHERE user_id=?",(user.id,))
-    row=cursor.fetchone()
-
-    pts=row[0] if row else 0
-
-    await update.message.reply_text(f"🏆 {user.first_name}, you have {pts} points!")
 
 async def rewards(update,context):
 
@@ -298,146 +419,6 @@ async def redeem(update,context):
     )
 
 # -----------------------
-# AUTO LEARN USERS
-# -----------------------
-
-async def learn_users(update,context):
-
-    if not update.message or not update.message.from_user:
-        return
-
-    register_user(update.message.from_user)
-
-# -----------------------
-# RECOGNITION ENGINE
-# -----------------------
-
-async def reaction_recognition(update,context):
-
-    if not update.message or not update.message.text:
-        return
-
-    text=update.message.text
-
-    if "🌱" not in text:
-        return
-
-    sender_user=update.message.from_user
-    register_user(sender_user)
-
-    sender_id=sender_user.id
-    sender_name=sender_user.first_name
-
-    today=datetime.now().strftime("%Y-%m-%d")
-    message_id=update.message.message_id
-
-    points=max(1,min(text.count("🌱"),5))
-
-    receivers=set()
-    matched_names=set()
-
-    clean_text = text.replace("🌱","").lower()
-    words = clean_text.split()
-
-    for r in recognitions_sheet.get_all_records():
-
-        full_name = str(r["Receiver"]).strip()
-        full_lower = full_name.lower()
-
-        if full_lower in clean_text and full_lower not in matched_names:
-
-            receivers.add((0, full_name))
-            matched_names.add(full_lower)
-
-    for w in words:
-
-        sheet_matches = find_sheet_name_match(w)
-
-        for sheet_name in sheet_matches:
-
-            if sheet_name.lower() not in matched_names:
-
-                receivers.add((0, sheet_name))
-                matched_names.add(sheet_name.lower())
-
-    if not receivers:
-        return
-
-    if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
-
-        await update.message.reply_text("Daily recognition limit reached (5).")
-        return
-
-    names=[]
-
-    for r_id,r_name in receivers:
-
-        add_point(r_id,r_name,points)
-
-        cursor.execute("""
-        INSERT OR IGNORE INTO recognitions
-        (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
-        VALUES(?,?,?,?,?,?,?)
-        """,(sender_id,sender_name,r_id,r_name,today,points,message_id))
-
-        names.append(r_name)
-
-    conn.commit()
-
-    reply_text = f"🌱 {', '.join(names)} received {points} recognition point(s)!"
-
-    await update.message.reply_text(reply_text)
-
-# -----------------------
-# WEEKLY LEADERBOARD
-# -----------------------
-
-async def friday_leaderboard(app):
-
-    today=datetime.now()
-    start=today-timedelta(days=today.weekday())
-    start=start.strftime("%Y-%m-%d")
-
-    cursor.execute("""
-    SELECT receiver_name,SUM(points)
-    FROM recognitions
-    WHERE date>=?
-    GROUP BY receiver_name
-    ORDER BY SUM(points) DESC
-    LIMIT 10
-    """,(start,))
-
-    rows=cursor.fetchall()
-
-    text="🏆 Weekly Leaderboard\n\n"
-
-    for i,r in enumerate(rows,1):
-        text+=f"{i}. {r[0]} — {r[1]} pts\n"
-
-    try:
-
-        await app.bot.send_message(
-        chat_id=-1003846532829,
-        text=text
-        )
-
-    except Exception as e:
-        print("Leaderboard error:",e)
-
-async def scheduler_loop(app):
-
-    while True:
-
-        now=datetime.now()
-
-        if now.weekday()==4 and now.hour==17 and now.minute==0:
-
-            await friday_leaderboard(app)
-            await asyncio.sleep(60)
-
-        await asyncio.sleep(30)
-
-# -----------------------
 # MAIN
 # -----------------------
 
@@ -455,12 +436,6 @@ def main():
     app.add_handler(MessageHandler(filters.ALL,learn_users),group=0)
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,reaction_recognition),group=1)
-
-    async def start_tasks(application):
-
-        asyncio.create_task(scheduler_loop(application))
-
-    app.post_init=start_tasks
 
     app.run_polling(drop_pending_updates=True)
 
