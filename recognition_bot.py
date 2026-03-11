@@ -210,6 +210,45 @@ async def mypoints(update,context):
     await update.message.reply_text(f"🏆 {user.first_name}, you have {pts} points!")
 
 # -----------------------
+# LEADERBOARD COMMAND
+# -----------------------
+
+async def leaderboard(update,context):
+
+    today = datetime.utcnow()
+
+    monday = today - timedelta(days=today.weekday())
+
+    start = monday.strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT receiver_name, SUM(points)
+    FROM recognitions
+    WHERE date >= ?
+    GROUP BY receiver_name
+    ORDER BY SUM(points) DESC
+    LIMIT 10
+    """,(start,))
+
+    rows = cursor.fetchall()
+
+    if not rows:
+        await update.message.reply_text("No recognitions yet this week.")
+        return
+
+    message = "🏆 Weekly Recognition Leaderboard\n\n"
+
+    medals = ["🥇","🥈","🥉"]
+
+    for i,(name,pts) in enumerate(rows):
+
+        medal = medals[i] if i < len(medals) else "🏅"
+
+        message += f"{medal} {name} — {pts} points\n"
+
+    await update.message.reply_text(message)
+
+# -----------------------
 # AUTO LEARN USERS
 # -----------------------
 
@@ -251,18 +290,16 @@ async def reaction_recognition(update,context):
     clean_text = text.replace("🌱","").lower()
     words = clean_text.split()
 
-    # MATCH USERS FROM DATABASE (telegram users)
     cursor.execute("SELECT user_id,name,normalized_name FROM users")
     users = cursor.fetchall()
 
     for uid,name,norm in users:
 
-        if norm in words and norm not in matched_names:
+        if uid != sender_id and norm in words and norm not in matched_names:
 
             receivers.add((uid,name))
             matched_names.add(norm)
 
-    # MATCH TEAM SHEET
     for w in words:
 
         team_matches = find_team_name_match(w)
@@ -274,7 +311,6 @@ async def reaction_recognition(update,context):
                 receivers.add((0, team_name))
                 matched_names.add(w)
 
-    # MATCH RECOGNITION SHEET
     for w in words:
 
         sheet_matches = find_sheet_name_match(w)
@@ -287,6 +323,10 @@ async def reaction_recognition(update,context):
                 matched_names.add(w)
 
     if not receivers:
+
+        if normalize_name(sender_name) in words:
+            await update.message.reply_text("🚫 You cannot recognize yourself.")
+
         return
 
     if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
@@ -323,6 +363,52 @@ async def reaction_recognition(update,context):
     await update.message.reply_text(reply_text)
 
 # -----------------------
+# FRIDAY LEADERBOARD
+# -----------------------
+
+async def friday_leaderboard(context):
+
+    today = datetime.utcnow()
+
+    monday = today - timedelta(days=today.weekday())
+
+    start = monday.strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    SELECT receiver_name, SUM(points)
+    FROM recognitions
+    WHERE date >= ?
+    GROUP BY receiver_name
+    ORDER BY SUM(points) DESC
+    LIMIT 3
+    """,(start,))
+
+    rows = cursor.fetchall()
+
+    if not rows:
+        return
+
+    message = "🏆 Friday Recognition Leaderboard\n\n"
+
+    medals = ["🥇","🥈","🥉"]
+
+    for i,(name,pts) in enumerate(rows):
+
+        medal = medals[i] if i < len(medals) else "🏅"
+
+        message += f"{medal} {name} — {pts} points\n"
+
+    message += "\nAmazing work team! 🌱"
+
+    try:
+        await context.bot.send_message(
+            chat_id=os.environ["GROUP_CHAT_ID"],
+            text=message
+        )
+    except Exception as e:
+        print("Leaderboard send error:", e)
+
+# -----------------------
 # REWARDS
 # -----------------------
 
@@ -344,13 +430,11 @@ def get_rewards():
 
     return rewards
 
-
 def get_user_points(user_id):
 
     cursor.execute("SELECT points FROM points WHERE user_id=?", (user_id,))
     row = cursor.fetchone()
     return row[0] if row else 0
-
 
 def deduct_points(user_id, cost):
 
@@ -432,10 +516,19 @@ def main():
     app.add_handler(CommandHandler("mypoints",mypoints))
     app.add_handler(CommandHandler("rewards",rewards))
     app.add_handler(CommandHandler("redeem",redeem))
+    app.add_handler(CommandHandler("leaderboard",leaderboard))
 
     app.add_handler(MessageHandler(filters.ALL,learn_users),group=0)
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,reaction_recognition),group=1)
+
+    job_queue = app.job_queue
+
+    job_queue.run_daily(
+        friday_leaderboard,
+        time=datetime.strptime("17:00","%H:%M").time(),
+        days=(4,)
+    )
 
     app.run_polling(drop_pending_updates=True)
 
