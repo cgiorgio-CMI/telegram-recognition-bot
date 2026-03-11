@@ -5,8 +5,7 @@ import asyncio
 import os
 import json
 
-from telegram.ext import Application, CommandHandler, MessageHandler, MessageReactionHandler, filters
-from telegram import ReactionTypeEmoji
+from telegram.ext import Application, CommandHandler, MessageHandler, filters
 import gspread
 from oauth2client.service_account import ServiceAccountCredentials
 
@@ -103,9 +102,7 @@ def normalize_name(name):
 def register_user(user):
 
     username = normalize_name(user.username) if user.username else None
-
     name = user.first_name
-
     normalized = normalize_name(name)
 
     cursor.execute("""
@@ -188,9 +185,7 @@ def get_rewards():
 def get_user_points(user_id):
 
     cursor.execute("SELECT points FROM points WHERE user_id=?", (user_id,))
-
     row = cursor.fetchone()
-
     return row[0] if row else 0
 
 
@@ -284,11 +279,12 @@ async def redeem(update,context):
 # -----------------------
 
 async def learn_users(update,context):
+
     if update.message and update.message.from_user:
         register_user(update.message.from_user)
 
 # -----------------------
-# MESSAGE 🌱 RECOGNITION
+# RECOGNITION ENGINE
 # -----------------------
 
 async def reaction_recognition(update,context):
@@ -326,6 +322,7 @@ async def reaction_recognition(update,context):
         return
 
     if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
+
         await update.message.reply_text("Daily recognition limit reached (5).")
         return
 
@@ -336,7 +333,7 @@ async def reaction_recognition(update,context):
         add_point(r_id,r_name,points)
 
         cursor.execute("""
-        INSERT OR IGNORE INTO recognitions
+        INSERT INTO recognitions
         (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
         VALUES(?,?,?,?,?,?,?)
         """,(sender_id,sender_name,r_id,r_name,today,points,message_id))
@@ -348,55 +345,6 @@ async def reaction_recognition(update,context):
     await update.message.reply_text(
         f"🌱 {', '.join(names)} received {points} recognition point(s)!"
     )
-
-# -----------------------
-# 🌱 REACTION RECOGNITION (NEW)
-# -----------------------
-
-async def reaction_event(update, context):
-
-    reaction = update.message_reaction
-
-    user = reaction.user
-    message = reaction.message
-
-    if not user or not message:
-        return
-
-    if not reaction.new_reaction:
-        return
-
-    emoji_found = False
-
-    for r in reaction.new_reaction:
-        if isinstance(r, ReactionTypeEmoji) and r.emoji == "🌱":
-            emoji_found = True
-
-    if not emoji_found:
-        return
-
-    sender = user
-    receiver = message.from_user
-
-    if not receiver or sender.id == receiver.id:
-        return
-
-    register_user(sender)
-    register_user(receiver)
-
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    add_point(receiver.id, receiver.first_name, 1)
-
-    unique_message_id = message.message_id * 100000 + sender.id
-
-    cursor.execute("""
-    INSERT OR IGNORE INTO recognitions
-    (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
-    VALUES(?,?,?,?,?,?,?)
-    """,(sender.id,sender.first_name,receiver.id,receiver.first_name,today,1,unique_message_id))
-
-    conn.commit()
 
 # -----------------------
 # WEEKLY LEADERBOARD
@@ -425,10 +373,12 @@ async def friday_leaderboard(app):
         text+=f"{i}. {r[0]} — {r[1]} pts\n"
 
     try:
+
         await app.bot.send_message(
         chat_id=-1003846532829,
         text=text
         )
+
     except Exception as e:
         print("Leaderboard error:",e)
 
@@ -464,9 +414,8 @@ def main():
 
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND,reaction_recognition),group=1)
 
-    app.add_handler(MessageReactionHandler(reaction_event))
-
     async def start_tasks(application):
+
         asyncio.create_task(scheduler_loop(application))
 
     app.post_init=start_tasks
