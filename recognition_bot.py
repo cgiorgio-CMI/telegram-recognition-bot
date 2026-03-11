@@ -159,9 +159,11 @@ def check_milestone(user_id):
 
     return None
 
-# ---- 5 LINE NAME MATCH FIX ----
+# ---- NAME MATCH FIX ----
 
 def find_sheet_name_match(word):
+
+    matches = []
 
     try:
         rows = recognitions_sheet.get_all_records()
@@ -173,12 +175,12 @@ def find_sheet_name_match(word):
             parts = receiver.lower().split()
 
             if word.lower() in parts:
-                return receiver
+                matches.append(receiver)
 
     except Exception as e:
         print("Sheet lookup error:", e)
 
-    return None
+    return matches
 
 # -----------------------
 # REWARD HELPERS
@@ -349,12 +351,14 @@ async def reaction_recognition(update,context):
 
     for w in words:
 
-        sheet_name = find_sheet_name_match(w)
+        sheet_matches = find_sheet_name_match(w)
 
-        if sheet_name and sheet_name.lower() not in matched_names:
+        for sheet_name in sheet_matches:
 
-            receivers.add((0, sheet_name))
-            matched_names.add(sheet_name.lower())
+            if sheet_name.lower() not in matched_names:
+
+                receivers.add((0, sheet_name))
+                matched_names.add(sheet_name.lower())
 
     if not receivers:
         return
@@ -377,22 +381,6 @@ async def reaction_recognition(update,context):
         """,(sender_id,sender_name,r_id,r_name,today,points,message_id))
 
         names.append(r_name)
-
-        try:
-            await asyncio.to_thread(
-                recognitions_sheet.append_row,
-                [today, sender_name, r_name, r_name, text, points]
-            )
-        except Exception as e:
-            print("Sheet log error:", e)
-
-        # ---- AUTO ADD NEW RECEIVER TO SHEET ----
-        try:
-            existing = [str(r["Receiver"]).lower() for r in recognitions_sheet.get_all_records()]
-            if r_name.lower() not in existing:
-                await asyncio.to_thread(recognitions_sheet.append_row, ["","","",r_name,"",""])
-        except Exception as e:
-            print("Receiver auto-add error:", e)
 
     conn.commit()
 
