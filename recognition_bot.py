@@ -159,6 +159,27 @@ def check_milestone(user_id):
 
     return None
 
+# ---- 5 LINE NAME MATCH FIX ----
+
+def find_sheet_name_match(word):
+
+    try:
+        rows = recognitions_sheet.get_all_records()
+
+        for r in rows:
+
+            receiver = str(r["Receiver"]).strip()
+
+            parts = receiver.lower().split()
+
+            if word.lower() in parts:
+                return receiver
+
+    except Exception as e:
+        print("Sheet lookup error:", e)
+
+    return None
+
 # -----------------------
 # REWARD HELPERS
 # -----------------------
@@ -280,8 +301,10 @@ async def redeem(update,context):
 
 async def learn_users(update,context):
 
-    if update.message and update.message.from_user:
-        register_user(update.message.from_user)
+    if not update.message or not update.message.from_user:
+        return
+
+    register_user(update.message.from_user)
 
 # -----------------------
 # RECOGNITION ENGINE
@@ -309,14 +332,29 @@ async def reaction_recognition(update,context):
     points=max(1,min(text.count("🌱"),5))
 
     receivers=set()
+    matched_names=set()
 
-    if update.message.reply_to_message:
+    clean_text = text.replace("🌱","").lower()
+    words = clean_text.split()
 
-        r=update.message.reply_to_message.from_user
-        register_user(r)
+    for r in recognitions_sheet.get_all_records():
 
-        if r.id!=sender_id:
-            receivers.add((r.id,r.first_name))
+        full_name = str(r["Receiver"]).strip()
+        full_lower = full_name.lower()
+
+        if full_lower in clean_text and full_lower not in matched_names:
+
+            receivers.add((0, full_name))
+            matched_names.add(full_lower)
+
+    for w in words:
+
+        sheet_name = find_sheet_name_match(w)
+
+        if sheet_name and sheet_name.lower() not in matched_names:
+
+            receivers.add((0, sheet_name))
+            matched_names.add(sheet_name.lower())
 
     if not receivers:
         return
@@ -333,18 +371,34 @@ async def reaction_recognition(update,context):
         add_point(r_id,r_name,points)
 
         cursor.execute("""
-        INSERT INTO recognitions
+        INSERT OR IGNORE INTO recognitions
         (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
         VALUES(?,?,?,?,?,?,?)
         """,(sender_id,sender_name,r_id,r_name,today,points,message_id))
 
         names.append(r_name)
 
+        try:
+            await asyncio.to_thread(
+                recognitions_sheet.append_row,
+                [today, sender_name, r_name, r_name, text, points]
+            )
+        except Exception as e:
+            print("Sheet log error:", e)
+
+        # ---- AUTO ADD NEW RECEIVER TO SHEET ----
+        try:
+            existing = [str(r["Receiver"]).lower() for r in recognitions_sheet.get_all_records()]
+            if r_name.lower() not in existing:
+                await asyncio.to_thread(recognitions_sheet.append_row, ["","","",r_name,"",""])
+        except Exception as e:
+            print("Receiver auto-add error:", e)
+
     conn.commit()
 
-    await update.message.reply_text(
-        f"🌱 {', '.join(names)} received {points} recognition point(s)!"
-    )
+    reply_text = f"🌱 {', '.join(names)} received {points} recognition point(s)!"
+
+    await update.message.reply_text(reply_text)
 
 # -----------------------
 # WEEKLY LEADERBOARD
