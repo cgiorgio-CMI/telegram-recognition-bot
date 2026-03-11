@@ -308,7 +308,7 @@ async def reaction_recognition(update,context):
 
             if w not in matched_names:
 
-                receivers.add((0, team_name))
+                receivers.add((hash(team_name), team_name))
                 matched_names.add(w)
 
     for w in words:
@@ -319,7 +319,7 @@ async def reaction_recognition(update,context):
 
             if w not in matched_names:
 
-                receivers.add((0, sheet_name))
+                receivers.add((hash(sheet_name), sheet_name))
                 matched_names.add(w)
 
     if not receivers:
