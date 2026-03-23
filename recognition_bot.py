@@ -217,7 +217,9 @@ async def reaction_recognition(update, context):
                     matched_ids.add(result[0])
 
     # 2. FULL NAME MATCHING
-    clean_text = text.replace("🌱", "").replace("@", "").lower()
+    # Normalize the text like we normalize names
+    clean_text = normalize_name(text.replace("🌱", "").replace("@", ""))
+
     cursor.execute("SELECT user_id, name, normalized_name FROM users")
     users = cursor.fetchall()
     for uid, name, norm_name in users:
@@ -256,7 +258,6 @@ async def reaction_recognition(update, context):
     conn.commit()
     reply_text = f"🌱 {', '.join(names)} received {points} recognition point(s)!"
     await update.message.reply_text(reply_text)
-
 # -----------------------
 # FRIDAY LEADERBOARD
 # -----------------------
