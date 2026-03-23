@@ -202,7 +202,24 @@ async def reaction_recognition(update, context):
     message_id = update.message.message_id
     points = max(1, min(text.count("🌱"), 5))
     receivers = set()
-    matched_ids = set()
+
+    # Load official team names from Google Sheets Team tab
+    try:
+        team_rows = await asyncio.to_thread(team_sheet.get_all_records)
+    except Exception as e:
+        print("Team sheet load error:", e)
+        team_rows = []
+
+    official_names = []
+    for row in team_rows:
+        # assume sheet has a column "Name" with the canonical person names
+        name = row.get("Name") or row.get("name") or row.get("Full Name") or row.get("full name")
+        if name:
+            normalized = normalize_name(name)
+            official_names.append((normalized, name))
+
+    # Prepare normalized text
+    clean_text = normalize_name(text.replace("🌱", "").replace("@", "")) or ""
 
     # 1. @MENTIONS (Telegram entities)
     if update.message.entities:
@@ -214,27 +231,38 @@ async def reaction_recognition(update, context):
                 result = cursor.fetchone()
                 if result and result[0] != sender_id:
                     receivers.add((result[0], result[1]))
-                    matched_ids.add(result[0])
 
-    # 2. FULL NAME MATCHING
-    # Normalize the text like we normalize names
-    clean_text = normalize_name(text.replace("🌱", "").replace("@", ""))
-
+    # 2. MATCH AGAINST DATABASE USERS
     cursor.execute("SELECT user_id, name, normalized_name FROM users")
-    users = cursor.fetchall()
-    for uid, name, norm_name in users:
-        if uid == sender_id or uid in matched_ids:
+    for uid, name, norm_name in cursor.fetchall():
+        if uid == sender_id:
             continue
         if norm_name and norm_name in clean_text:
             receivers.add((uid, name))
-            matched_ids.add(uid)
 
-    # UX MESSAGE IF NO ONE FOUND
+    # 3. MATCH AGAINST OFFICIAL TEAM LIST
+    for norm_official, official_name in official_names:
+        if norm_official and norm_official in clean_text:
+            # Check if already in DB, else insert
+            cursor.execute("SELECT user_id FROM users WHERE normalized_name=?", (norm_official,))
+            row = cursor.fetchone()
+            if row:
+                receivers.add((row[0], official_name))
+            else:
+                # auto‑register new team user
+                cursor.execute("INSERT INTO users(username,name,normalized_name) VALUES (?,?,?)",
+                               (None, official_name, norm_official))
+                conn.commit()
+                receivers.add((cursor.lastrowid, official_name))
+
+    # FAIL IF NO RECEIVERS
     if not receivers:
-        await update.message.reply_text("⚠️ Couldn't find that person. Try using @username or full name.")
+        await update.message.reply_text(
+            "⚠️ Couldn't find that person. Try using @username or a name from the team list."
+        )
         return
 
-    # DAILY LIMIT (MAX 5 POINTS TOTAL)
+    # DAILY LIMIT
     if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
         await update.message.reply_text("Daily recognition limit reached (5 points max).")
         return
@@ -255,9 +283,9 @@ async def reaction_recognition(update, context):
             )
         except Exception as e:
             print("Sheet log error:", e)
+
     conn.commit()
-    reply_text = f"🌱 {', '.join(names)} received {points} recognition point(s)!"
-    await update.message.reply_text(reply_text)
+    await update.message.reply_text(f"🌱 {', '.join(names)} received {points} recognition point(s)!")
 # -----------------------
 # FRIDAY LEADERBOARD
 # -----------------------
