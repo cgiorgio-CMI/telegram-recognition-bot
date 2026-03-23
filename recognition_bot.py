@@ -94,16 +94,16 @@ conn.commit()
 # -----------------------
 
 def normalize_name(name):
-
     if not name:
         return None
-
     return name.lower().strip().replace("@","")
 
 def register_user(user):
 
     username = normalize_name(user.username) if user.username else None
-    name = user.first_name
+
+    # FIX: store full name
+    name = f"{user.first_name} {user.last_name or ''}".strip()
     normalized = normalize_name(name)
 
     cursor.execute("""
@@ -141,56 +141,6 @@ def daily_count(user_id):
     return cursor.fetchone()[0]
 
 # -----------------------
-# NAME MATCH FIX
-# -----------------------
-
-def find_sheet_name_match(word):
-
-    matches = []
-
-    try:
-        rows = recognitions_sheet.get_all_records()
-
-        for r in rows:
-
-            receiver = str(r["Receiver"]).strip()
-
-            parts = receiver.lower().split()
-
-            if word.lower() in parts:
-                matches.append(receiver)
-
-    except Exception as e:
-        print("Sheet lookup error:", e)
-
-    return matches
-
-# -----------------------
-# TEAM SHEET LOOKUP
-# -----------------------
-
-def find_team_name_match(word):
-
-    matches = []
-
-    try:
-        rows = team_sheet.get_all_records()
-
-        for r in rows:
-
-            name = str(r["Name"]).strip()
-
-            parts = name.lower().split()
-
-            if word.lower() in parts:
-                matches.append(name)
-
-    except Exception as e:
-        print("Team sheet lookup error:", e)
-
-    return matches
-
-# -----------------------
 # COMMANDS
 # -----------------------
 
@@ -215,7 +165,7 @@ async def mypoints(update,context):
 
 async def leaderboard(update,context):
 
-    today = datetime.utcnow()
+    today = datetime.now()
 
     monday = today - timedelta(days=today.weekday())
 
@@ -241,9 +191,7 @@ async def leaderboard(update,context):
     medals = ["🥇","🥈","🥉"]
 
     for i,(name,pts) in enumerate(rows):
-
         medal = medals[i] if i < len(medals) else "🏅"
-
         message += f"{medal} {name} — {pts} points\n"
 
     await update.message.reply_text(message)
@@ -253,10 +201,8 @@ async def leaderboard(update,context):
 # -----------------------
 
 async def learn_users(update,context):
-
     if not update.message or not update.message.from_user:
         return
-
     register_user(update.message.from_user)
 
 # -----------------------
@@ -268,70 +214,73 @@ async def reaction_recognition(update,context):
     if not update.message or not update.message.text:
         return
 
-    text=update.message.text
+    text = update.message.text
 
     if "🌱" not in text:
         return
 
-    sender_user=update.message.from_user
+    sender_user = update.message.from_user
     register_user(sender_user)
 
-    sender_id=sender_user.id
-    sender_name=sender_user.first_name
+    sender_id = sender_user.id
+    sender_name = sender_user.first_name
 
-    today=datetime.now().strftime("%Y-%m-%d")
-    message_id=update.message.message_id
+    today = datetime.now().strftime("%Y-%m-%d")
+    message_id = update.message.message_id
 
-    points=max(1,min(text.count("🌱"),5))
+    points = max(1, min(text.count("🌱"), 5))
 
-    receivers=set()
-    matched_names=set()
+    receivers = set()
+    matched_ids = set()
 
+    # -----------------------
+    # 1. @MENTIONS (BEST METHOD)
+    # -----------------------
+    if update.message.entities:
+        for entity in update.message.entities:
+            if entity.type == "mention":
+                mention = text[entity.offset: entity.offset + entity.length]
+                username = mention.replace("@", "").lower()
+
+                cursor.execute("SELECT user_id,name FROM users WHERE username=?", (username,))
+                result = cursor.fetchone()
+
+                if result and result[0] != sender_id:
+                    receivers.add((result[0], result[1]))
+                    matched_ids.add(result[0])
+
+    # -----------------------
+    # 2. FALLBACK: NAME MATCHING
+    # -----------------------
     clean_text = text.replace("🌱","").lower()
-    words = clean_text.split()
+    words = [w.replace("@","").strip() for w in clean_text.split()]
 
     cursor.execute("SELECT user_id,name,normalized_name FROM users")
     users = cursor.fetchall()
 
     for uid,name,norm in users:
 
-        if uid != sender_id and norm in words and norm not in matched_names:
+        if uid == sender_id or uid in matched_ids:
+            continue
 
+        name_parts = norm.split()
+
+        if any(part in words for part in name_parts):
             receivers.add((uid,name))
-            matched_names.add(norm)
+            matched_ids.add(uid)
 
-    for w in words:
-
-        team_matches = find_team_name_match(w)
-
-        for team_name in team_matches:
-
-            if w not in matched_names:
-
-                receivers.add((hash(team_name), team_name))
-                matched_names.add(w)
-
-    for w in words:
-
-        sheet_matches = find_sheet_name_match(w)
-
-        for sheet_name in sheet_matches:
-
-            if w not in matched_names:
-
-                receivers.add((hash(sheet_name), sheet_name))
-                matched_names.add(w)
-
+    # -----------------------
+    # UX FIX
+    # -----------------------
     if not receivers:
-
-        if normalize_name(sender_name) in words:
-            await update.message.reply_text("🚫 You cannot recognize yourself.")
-
+        await update.message.reply_text("⚠️ Couldn't find that person. Try using @username.")
         return
 
+    # -----------------------
+    # DAILY LIMIT (TOTAL 5)
+    # -----------------------
     if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
-
-        await update.message.reply_text("Daily recognition limit reached (5).")
+        await update.message.reply_text("Daily recognition limit reached (5 points max).")
         return
 
     names=[]
@@ -368,7 +317,7 @@ async def reaction_recognition(update,context):
 
 async def friday_leaderboard(context):
 
-    today = datetime.utcnow()
+    today = datetime.now()
 
     monday = today - timedelta(days=today.weekday())
 
@@ -393,9 +342,7 @@ async def friday_leaderboard(context):
     medals = ["🥇","🥈","🥉"]
 
     for i,(name,pts) in enumerate(rows):
-
         medal = medals[i] if i < len(medals) else "🏅"
-
         message += f"{medal} {name} — {pts} points\n"
 
     message += "\nAmazing work team! 🌱"
@@ -407,100 +354,6 @@ async def friday_leaderboard(context):
         )
     except Exception as e:
         print("Leaderboard send error:", e)
-
-# -----------------------
-# REWARDS
-# -----------------------
-
-def get_rewards():
-
-    rows = rewards_sheet.get_all_records()
-
-    rewards = []
-
-    for r in rows:
-
-        if str(r["Active"]).lower() == "true":
-
-            rewards.append({
-                "id": int(r["ID"]),
-                "name": r["Reward"],
-                "cost": int(r["Cost"])
-            })
-
-    return rewards
-
-def get_user_points(user_id):
-
-    cursor.execute("SELECT points FROM points WHERE user_id=?", (user_id,))
-    row = cursor.fetchone()
-    return row[0] if row else 0
-
-def deduct_points(user_id, cost):
-
-    cursor.execute("""
-    UPDATE points
-    SET points = points - ?
-    WHERE user_id = ?
-    """, (cost, user_id))
-
-    conn.commit()
-
-async def rewards(update,context):
-
-    rewards_list = get_rewards()
-
-    if not rewards_list:
-        await update.message.reply_text("No rewards available.")
-        return
-
-    text = "🎁 Available Rewards\n\n"
-
-    for r in rewards_list:
-        text += f"{r['id']}. {r['name']} — {r['cost']} pts\n"
-
-    text += "\nUse /redeem <id>"
-
-    await update.message.reply_text(text)
-
-async def redeem(update,context):
-
-    user = update.message.from_user
-
-    if not context.args:
-        await update.message.reply_text("Usage: /redeem <reward id>")
-        return
-
-    reward_id = int(context.args[0])
-
-    rewards_list = get_rewards()
-    reward = next((r for r in rewards_list if r["id"] == reward_id), None)
-
-    if not reward:
-        await update.message.reply_text("Reward not found.")
-        return
-
-    user_points = get_user_points(user.id)
-
-    if user_points < reward["cost"]:
-        await update.message.reply_text("Not enough points.")
-        return
-
-    deduct_points(user.id, reward["cost"])
-
-    today = datetime.now().strftime("%Y-%m-%d")
-
-    try:
-        await asyncio.to_thread(
-            redemptions_sheet.append_row,
-            [today, user.first_name, reward["name"], reward["cost"]]
-        )
-    except Exception as e:
-        print("Redemption log error:", e)
-
-    await update.message.reply_text(
-        f"🎉 {reward['name']} redeemed!\nRemaining points: {user_points - reward['cost']}"
-    )
 
 # -----------------------
 # MAIN
@@ -524,7 +377,6 @@ def main():
 
     job_queue = app.job_queue
 
-    # --- crash-proof scheduler ---
     if job_queue:
         job_queue.run_daily(
             friday_leaderboard,
@@ -533,7 +385,6 @@ def main():
         )
     else:
         print("JobQueue not available — Friday leaderboard disabled")
-    # --- end fix ---
 
     app.run_polling(drop_pending_updates=True)
 
