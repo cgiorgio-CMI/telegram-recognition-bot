@@ -209,8 +209,7 @@ async def learn_users(update,context):
 # RECOGNITION ENGINE
 # -----------------------
 
-async def reaction_recognition(update,context):
-
+async def reaction_recognition(update, context):
     if not update.message or not update.message.text:
         return
 
@@ -234,7 +233,7 @@ async def reaction_recognition(update,context):
     matched_ids = set()
 
     # -----------------------
-    # 1. @MENTIONS (BEST METHOD)
+    # 1. @MENTIONS (Telegram entities)
     # -----------------------
     if update.message.entities:
         for entity in update.message.entities:
@@ -242,7 +241,7 @@ async def reaction_recognition(update,context):
                 mention = text[entity.offset: entity.offset + entity.length]
                 username = mention.replace("@", "").lower()
 
-                cursor.execute("SELECT user_id,name FROM users WHERE username=?", (username,))
+                cursor.execute("SELECT user_id, name FROM users WHERE username=?", (username,))
                 result = cursor.fetchone()
 
                 if result and result[0] != sender_id:
@@ -250,50 +249,46 @@ async def reaction_recognition(update,context):
                     matched_ids.add(result[0])
 
     # -----------------------
-    # 2. FALLBACK: NAME MATCHING
+    # 2. FULL NAME MATCHING
     # -----------------------
-    clean_text = text.replace("🌱","").lower()
-    words = [w.replace("@","").strip() for w in clean_text.split()]
+    clean_text = text.replace("🌱", "").replace("@", "").lower()
 
-    cursor.execute("SELECT user_id,name,normalized_name FROM users")
+    cursor.execute("SELECT user_id, name, normalized_name FROM users")
     users = cursor.fetchall()
 
-    for uid,name,norm in users:
-
+    for uid, name, norm_name in users:
         if uid == sender_id or uid in matched_ids:
             continue
 
-        name_parts = norm.split()
-
-        if any(part in words for part in name_parts):
-            receivers.add((uid,name))
+        # Check if the full normalized name is anywhere in the cleaned text
+        if norm_name and norm_name in clean_text:
+            receivers.add((uid, name))
             matched_ids.add(uid)
 
     # -----------------------
-    # UX FIX
+    # UX MESSAGE IF NO ONE FOUND
     # -----------------------
     if not receivers:
-        await update.message.reply_text("⚠️ Couldn't find that person. Try using @username.")
+        await update.message.reply_text("⚠️ Couldn't find that person. Try using @username or full name.")
         return
 
     # -----------------------
-    # DAILY LIMIT (TOTAL 5)
+    # DAILY LIMIT (MAX 5 POINTS TOTAL)
     # -----------------------
     if daily_count(sender_id) + points > MAX_DAILY_RECOGNITIONS:
         await update.message.reply_text("Daily recognition limit reached (5 points max).")
         return
 
-    names=[]
+    names = []
 
-    for r_id,r_name in receivers:
-
-        add_point(r_id,r_name,points)
+    for r_id, r_name in receivers:
+        add_point(r_id, r_name, points)
 
         cursor.execute("""
         INSERT OR IGNORE INTO recognitions
-        (sender_id,sender_name,receiver_id,receiver_name,date,points,message_id)
-        VALUES(?,?,?,?,?,?,?)
-        """,(sender_id,sender_name,r_id,r_name,today,points,message_id))
+        (sender_id, sender_name, receiver_id, receiver_name, date, points, message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (sender_id, sender_name, r_id, r_name, today, points, message_id))
 
         names.append(r_name)
 
