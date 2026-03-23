@@ -354,7 +354,99 @@ async def friday_leaderboard(context):
         )
     except Exception as e:
         print("Leaderboard send error:", e)
+# -----------------------
+# REWARDS
+# -----------------------
 
+def get_rewards():
+
+    rows = rewards_sheet.get_all_records()
+
+    rewards = []
+
+    for r in rows:
+
+        if str(r["Active"]).lower() == "true":
+
+            rewards.append({
+                "id": int(r["ID"]),
+                "name": r["Reward"],
+                "cost": int(r["Cost"])
+            })
+
+    return rewards
+
+def get_user_points(user_id):
+
+    cursor.execute("SELECT points FROM points WHERE user_id=?", (user_id,))
+    row = cursor.fetchone()
+    return row[0] if row else 0
+
+def deduct_points(user_id, cost):
+
+    cursor.execute("""
+    UPDATE points
+    SET points = points - ?
+    WHERE user_id = ?
+    """, (cost, user_id))
+
+    conn.commit()
+
+async def rewards(update,context):
+
+    rewards_list = get_rewards()
+
+    if not rewards_list:
+        await update.message.reply_text("No rewards available.")
+        return
+
+    text = "🎁 Available Rewards\n\n"
+
+    for r in rewards_list:
+        text += f"{r['id']}. {r['name']} — {r['cost']} pts\n"
+
+    text += "\nUse /redeem <id>"
+
+    await update.message.reply_text(text)
+
+async def redeem(update,context):
+
+    user = update.message.from_user
+
+    if not context.args:
+        await update.message.reply_text("Usage: /redeem <reward id>")
+        return
+
+    reward_id = int(context.args[0])
+
+    rewards_list = get_rewards()
+    reward = next((r for r in rewards_list if r["id"] == reward_id), None)
+
+    if not reward:
+        await update.message.reply_text("Reward not found.")
+        return
+
+    user_points = get_user_points(user.id)
+
+    if user_points < reward["cost"]:
+        await update.message.reply_text("Not enough points.")
+        return
+
+    deduct_points(user.id, reward["cost"])
+
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    try:
+        await asyncio.to_thread(
+            redemptions_sheet.append_row,
+            [today, user.first_name, reward["name"], reward["cost"]]
+        )
+    except Exception as e:
+        print("Redemption log error:", e)
+
+    await update.message.reply_text(
+        f"🎉 {reward['name']} redeemed!\nRemaining points: {user_points - reward['cost']}"
+    )
 # -----------------------
 # MAIN
 # -----------------------
