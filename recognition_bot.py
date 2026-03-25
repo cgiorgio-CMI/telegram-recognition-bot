@@ -14,6 +14,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 # -----------------------
 
 BOT_TOKEN = os.environ["BOT_TOKEN"]
+ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 
 MAX_DAILY_RECOGNITIONS = 5
 
@@ -132,6 +133,61 @@ def daily_count(user_id):
     """,(user_id,today))
     return cursor.fetchone()[0]
 
+def is_admin_private(update):
+    return (
+        update.message
+        and update.message.from_user
+        and update.message.chat
+        and update.message.chat.type == "private"
+        and update.message.from_user.id == ADMIN_USER_ID
+    )
+
+def resolve_user_by_name(name):
+    normalized = normalize_name(name)
+    if not normalized:
+        return None
+
+    cursor.execute("""
+    SELECT user_id, name
+    FROM users
+    WHERE normalized_name=?
+    """, (normalized,))
+    row = cursor.fetchone()
+    if row:
+        return row
+
+    try:
+        team_rows = team_sheet.get_all_records()
+    except Exception as e:
+        print("Team sheet load error:", e)
+        team_rows = []
+
+    for team_row in team_rows:
+        team_name = (
+            team_row.get("Name")
+            or team_row.get("name")
+            or team_row.get("Full Name")
+            or team_row.get("full name")
+        )
+        if team_name and normalize_name(team_name) == normalized:
+            cursor.execute("""
+            INSERT INTO users(username,name,normalized_name)
+            VALUES(?,?,?)
+            """, (None, team_name, normalized))
+            conn.commit()
+            return (cursor.lastrowid, team_name)
+
+    return None
+
+def adjust_points(user_id, name, amount):
+    cursor.execute("""
+    INSERT INTO points(user_id,name,points)
+    VALUES(?,?,?)
+    ON CONFLICT(user_id) DO UPDATE SET
+    points=points+?
+    """, (user_id, name, amount, amount))
+    conn.commit()
+
 # -----------------------
 # COMMANDS
 # -----------------------
@@ -146,6 +202,124 @@ async def mypoints(update,context):
     row=cursor.fetchone()
     pts=row[0] if row else 0
     await update.message.reply_text(f"🏆 {user.first_name}, you have {pts} points!")
+
+async def adjust(update, context):
+    if not is_admin_private(update):
+        return
+
+    if len(context.args) < 2:
+        await update.message.reply_text(
+            "Usage:\n/adjust Full Name 5\n/adjust Full Name -3"
+        )
+        return
+
+    try:
+        amount = int(context.args[-1])
+    except ValueError:
+        await update.message.reply_text(
+            "Last value must be a whole number.\nExample: /adjust Anne Marie 5"
+        )
+        return
+
+    name = " ".join(context.args[:-1]).strip()
+    result = resolve_user_by_name(name)
+
+    if not result:
+        await update.message.reply_text(f"Could not find: {name}")
+        return
+
+    user_id, resolved_name = result
+    adjust_points(user_id, resolved_name, amount)
+
+    cursor.execute("SELECT points FROM points WHERE user_id=?", (user_id,))
+    total = cursor.fetchone()[0]
+
+    if amount >= 0:
+        await update.message.reply_text(
+            f"✅ Added {amount} point(s) to {resolved_name}.\nNew total: {total}"
+        )
+    else:
+        await update.message.reply_text(
+            f"✅ Removed {abs(amount)} point(s) from {resolved_name}.\nNew total: {total}"
+        )
+
+async def bulkadjust(update, context):
+    if not is_admin_private(update):
+        return
+
+    if not update.message.text:
+        return
+
+    lines = update.message.text.split("\n")[1:]
+    if not lines:
+        await update.message.reply_text(
+            "Usage:\n/bulkadjust\nAnne Marie 5\nSandra -2\nKennedy 3"
+        )
+        return
+
+    results = []
+
+    for line in lines:
+        line = line.strip()
+        if not line:
+            continue
+
+        parts = line.rsplit(" ", 1)
+        if len(parts) != 2:
+            results.append(f"⚠️ Skipped: {line}")
+            continue
+
+        name, amount_text = parts
+
+        try:
+            amount = int(amount_text)
+        except ValueError:
+            results.append(f"⚠️ Skipped: {line}")
+            continue
+
+        result = resolve_user_by_name(name)
+        if not result:
+            results.append(f"⚠️ Not found: {name}")
+            continue
+
+        user_id, resolved_name = result
+        adjust_points(user_id, resolved_name, amount)
+
+        cursor.execute("SELECT points FROM points WHERE user_id=?", (user_id,))
+        total = cursor.fetchone()[0]
+
+        if amount >= 0:
+            results.append(f"✅ {resolved_name}: +{amount} (Total: {total})")
+        else:
+            results.append(f"✅ {resolved_name}: {amount} (Total: {total})")
+
+    if not results:
+        await update.message.reply_text("No valid adjustments found.")
+        return
+
+    await update.message.reply_text("\n".join(results))
+
+async def allpoints(update,context):
+    cursor.execute("""
+    SELECT name, points
+    FROM points
+    WHERE points > 0
+    ORDER BY points DESC, name ASC
+    """)
+    rows = cursor.fetchall()
+
+    if not rows:
+        await update.message.reply_text("No points recorded yet.")
+        return
+
+    message = "🏆 All-Time Leaderboard\n\n"
+    medals = ["🥇","🥈","🥉"]
+
+    for i,(name,pts) in enumerate(rows):
+        medal = medals[i] if i < len(medals) else "🏅"
+        message += f"{medal} {name} — {pts} points\n"
+
+    await update.message.reply_text(message)
 
 # -----------------------
 # LEADERBOARD COMMAND
@@ -249,7 +423,7 @@ async def reaction_recognition(update, context):
             if row:
                 receivers.add((row[0], official_name))
             else:
-                # auto‑register new team user
+                # auto-register new team user
                 cursor.execute("INSERT INTO users(username,name,normalized_name) VALUES (?,?,?)",
                                (None, official_name, norm_official))
                 conn.commit()
@@ -286,6 +460,7 @@ async def reaction_recognition(update, context):
 
     conn.commit()
     await update.message.reply_text(f"🌱 {', '.join(names)} received {points} recognition point(s)!")
+
 # -----------------------
 # FRIDAY LEADERBOARD
 # -----------------------
@@ -397,6 +572,9 @@ def main():
 
     app.add_handler(CommandHandler("ping",ping))
     app.add_handler(CommandHandler("mypoints",mypoints))
+    app.add_handler(CommandHandler("adjust",adjust))
+    app.add_handler(CommandHandler("bulkadjust",bulkadjust))
+    app.add_handler(CommandHandler("allpoints",allpoints))
     app.add_handler(CommandHandler("rewards",rewards))
     app.add_handler(CommandHandler("redeem",redeem))
     app.add_handler(CommandHandler("leaderboard",leaderboard))
