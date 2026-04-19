@@ -54,7 +54,8 @@ team_sheet = sheet.worksheet("Team")
 # DATABASE
 # -----------------------
 
-DB_PATH = os.environ.get("DB_PATH", "/data/recognition.db") conn = sqlite3.connect(DB_PATH, check_same_thread=False)
+DB_PATH = os.environ.get("DB_PATH", "/data/recognition.db")
+conn = sqlite3.connect(DB_PATH, check_same_thread=False)
 cursor = conn.cursor()
 
 cursor.execute("""
