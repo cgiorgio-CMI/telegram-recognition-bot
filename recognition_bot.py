@@ -1,5 +1,6 @@
 import logging
 import sqlite3
+from zoneinfo import ZoneInfo
 from datetime import datetime, timedelta
 import asyncio
 import os
@@ -18,6 +19,7 @@ from oauth2client.service_account import ServiceAccountCredentials
 BOT_TOKEN = os.environ["BOT_TOKEN"]
 ADMIN_USER_ID = int(os.environ["ADMIN_USER_ID"])
 GROUP_CHAT_ID = int(os.environ["GROUP_CHAT_ID"])
+LOCAL_TZ = ZoneInfo("America/Toronto")
 
 MAX_DAILY_RECOGNITIONS = 5
 MAX_DAILY_RECEIVED = 5
@@ -152,7 +154,7 @@ def update_points(user_id, name, amount):
     return old_points, new_points
 
 def daily_given_count(user_id):
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     cursor.execute("""
     SELECT COALESCE(SUM(points),0)
     FROM recognitions
@@ -161,7 +163,7 @@ def daily_given_count(user_id):
     return cursor.fetchone()[0]
 
 def daily_received_count(user_id):
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     cursor.execute("""
     SELECT COALESCE(SUM(points),0)
     FROM recognitions
@@ -277,7 +279,7 @@ async def user_is_in_chat(bot, chat_id, user_id):
         return False
 
 async def log_manual_adjustment_to_sheet(admin_name, receiver_name, amount, reason):
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     try:
         await asyncio.to_thread(
             recognitions_sheet.append_row,
@@ -510,7 +512,7 @@ async def adminstats(update, context):
     if not is_admin_private(update):
         return
 
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
 
     cursor.execute("""
     SELECT receiver_name, SUM(points)
@@ -555,7 +557,7 @@ async def adminstats(update, context):
 # -----------------------
 
 async def leaderboard(update, context):
-    today = datetime.now()
+    today = datetime.now(LOCAL_TZ)
     monday = today - timedelta(days=today.weekday())
     start = monday.strftime("%Y-%m-%d")
 
@@ -607,7 +609,7 @@ async def reaction_recognition(update, context):
 
     sender_id = sender_user.id
     sender_name = sender_user.first_name
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
     message_id = update.message.message_id
     chat_id = update.effective_chat.id
 
@@ -768,7 +770,7 @@ async def reaction_recognition(update, context):
 # -----------------------
 
 async def friday_leaderboard(context):
-    today = datetime.now()
+    today = datetime.now(LOCAL_TZ)
     monday = today - timedelta(days=today.weekday())
     start = monday.strftime("%Y-%m-%d")
 
@@ -860,7 +862,7 @@ async def redeem(update, context):
         return
 
     deduct_points(user.id, reward["cost"])
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
 
     try:
         await asyncio.to_thread(
@@ -901,8 +903,8 @@ def main():
     if job_queue:
         job_queue.run_daily(
             friday_leaderboard,
-            time=datetime.strptime("17:00", "%H:%M").time(),
-            days=(4,)
+            time=datetime.strptime("17:00", "%H:%M").time().replace(tzinfo=LOCAL_TZ),
+            days=(5,)
         )
     else:
         print("JobQueue not available — Friday leaderboard disabled")
