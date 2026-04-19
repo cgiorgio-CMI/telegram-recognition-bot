@@ -260,6 +260,7 @@ def resolve_user_by_name(name):
     SELECT user_id, name
     FROM users
     WHERE normalized_name=?
+    ORDER BY CASE WHEN user_id > 0 THEN 0 ELSE 1 END, user_id ASC
     """, (normalized,))
     row = cursor.fetchone()
     if row:
@@ -765,6 +766,42 @@ async def reaction_recognition(update, context):
 
     await update.message.reply_text("\n".join(response_lines))
 
+async def adjustme(update, context):
+    if not is_admin_private(update):
+        return
+
+    if not context.args:
+        await update.message.reply_text("Usage: /adjustme 5 or /adjustme -3")
+        return
+
+    try:
+        amount = int(context.args[0])
+    except ValueError:
+        await update.message.reply_text("Enter a valid whole number.")
+        return
+
+    user = update.message.from_user
+    register_user(user)
+
+    full_name = f"{user.first_name} {user.last_name or ''}".strip()
+    old_points, new_points = update_points(user.id, full_name, amount)
+
+    reason = f"/adjustme {amount}"
+    await log_manual_adjustment_to_sheet(user.first_name, full_name, amount, reason)
+
+    message = []
+    if amount >= 0:
+        message.append(f"✅ Added {amount} point(s) to your account.")
+    else:
+        message.append(f"✅ Removed {abs(amount)} point(s) from your account.")
+    message.append(f"New total: {new_points}")
+
+    hits = milestone_hits(old_points, new_points)
+    for milestone in hits:
+        message.append(f"🎉 You reached {milestone} points!")
+
+    await update.message.reply_text("\n".join(message))
+
 # -----------------------
 # FRIDAY LEADERBOARD
 # -----------------------
@@ -895,6 +932,7 @@ def main():
     app.add_handler(CommandHandler("rewards", rewards))
     app.add_handler(CommandHandler("redeem", redeem))
     app.add_handler(CommandHandler("leaderboard", leaderboard))
+    app.add_handler(CommandHandler("adjustme", adjustme))
 
     app.add_handler(MessageHandler(filters.ALL, learn_users), group=0)
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, reaction_recognition), group=1)
