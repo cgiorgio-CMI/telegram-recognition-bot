@@ -460,10 +460,25 @@ async def allpoints(update, context):
         await update.message.reply_text("No points recorded yet.")
         return
 
+    combined = {}
+    display_names = {}
+
+    for name, pts in rows:
+        normalized = normalize_name(name)
+        if normalized not in combined:
+            combined[normalized] = 0
+            display_names[normalized] = name
+        combined[normalized] += pts
+
+    sorted_rows = sorted(
+        [(display_names[n], pts) for n, pts in combined.items()],
+        key=lambda x: (-x[1], x[0].lower())
+    )
+
     message = "🏆 All-Time Leaderboard\n\n"
     medals = ["🥇", "🥈", "🥉"]
 
-    for i, (name, pts) in enumerate(rows):
+    for i, (name, pts) in enumerate(sorted_rows):
         medal = medals[i] if i < len(medals) else "🏅"
         message += f"{medal} {name} — {pts} points\n"
 
