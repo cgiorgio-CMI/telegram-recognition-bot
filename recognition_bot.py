@@ -448,6 +448,7 @@ async def allpoints(update, context):
     cursor.execute("""
     SELECT name, points
     FROM points
+    WHERE points > 0
     ORDER BY points DESC, name ASC
     """)
     rows = cursor.fetchall()
