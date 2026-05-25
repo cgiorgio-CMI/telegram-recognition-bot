@@ -569,6 +569,35 @@ async def todaygiven(update, context):
     await update.message.reply_text(
         f"📤 {resolved_name} has given {total}/{MAX_DAILY_RECOGNITIONS} points today."
     )
+async def finduser(update, context):
+    if not is_admin_private(update):
+        return
+
+    search = " ".join(context.args).strip()
+    normalized = normalize_name(search)
+
+    cursor.execute("""
+    SELECT user_id, username, name, normalized_name
+    FROM users
+    WHERE normalized_name LIKE ?
+       OR name LIKE ?
+       OR username LIKE ?
+    """, (f"%{normalized}%", f"%{search}%", f"%{normalized}%"))
+
+    rows = cursor.fetchall()
+
+    if not rows:
+        await update.message.reply_text("No matching users found.")
+        return
+
+    message = ["Matching users:"]
+    for user_id, username, name, normalized_name in rows:
+        pts = get_user_points(user_id)
+        message.append(
+            f"ID: {user_id} | Name: {name} | Username: {username} | Points: {pts}"
+        )
+
+    await update.message.reply_text("\n".join(message))
 
 async def adminstats(update, context):
     if not is_admin_private(update):
@@ -989,6 +1018,7 @@ def main():
     app.add_handler(CommandHandler("allpoints", allpoints))
     app.add_handler(CommandHandler("todayreceived", todayreceived))
     app.add_handler(CommandHandler("todaygiven", todaygiven))
+    app.add_handler(CommandHandler("finduser", finduser))
     app.add_handler(CommandHandler("adminstats", adminstats))
     app.add_handler(CommandHandler("rewards", rewards))
     app.add_handler(CommandHandler("redeem", redeem))
