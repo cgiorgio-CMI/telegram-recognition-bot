@@ -339,18 +339,11 @@ async def mypoints(update, context):
     user = update.message.from_user
     register_user(user)
 
-    full_name = f"{user.first_name} {user.last_name or ''}".strip()
-    normalized = normalize_name(full_name)
+    pts = get_user_points(user.id)
 
-    cursor.execute("SELECT name, points FROM points WHERE points != 0")
-    rows = cursor.fetchall()
-
-    pts = 0
-    for row_name, row_points in rows:
-        if normalize_name(row_name) == normalized:
-            pts += row_points
-
-    await update.message.reply_text(f"🏆 {user.first_name}, you have {pts} points!")
+    await update.message.reply_text(
+        f"🏆 {user.first_name}, you have {pts} points!"
+    )
 
 async def adjust(update, context):
     if not is_admin_private(update):
