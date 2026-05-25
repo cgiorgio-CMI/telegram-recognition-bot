@@ -495,10 +495,15 @@ async def bulkadjust(update, context):
 
 async def allpoints(update, context):
     cursor.execute("""
-    SELECT name, points
-    FROM points
-    WHERE points > 0
-    ORDER BY points DESC, name ASC
+    SELECT
+        COALESCE(u.name, p.name),
+        p.points
+    FROM points p
+    LEFT JOIN users u
+    ON p.user_id = u.user_id
+    WHERE p.points > 0
+    ORDER BY p.points DESC,
+    COALESCE(u.name, p.name) ASC
     """)
     rows = cursor.fetchall()
 
