@@ -383,6 +383,23 @@ async def adjust(update, context):
     admin_name = update.message.from_user.first_name
     reason = f"/adjust {resolved_name} {amount}"
     await log_manual_adjustment_to_sheet(admin_name, resolved_name, amount, reason)
+    today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+
+    cursor.execute("""
+    INSERT INTO recognitions
+    (sender_id, sender_name, receiver_id, receiver_name, date, points, message_id)
+    VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (
+        ADMIN_USER_ID,
+        f"ADMIN ADJUST ({admin_name})",
+        user_id,
+        resolved_name,
+        today,
+        amount,
+        None
+    ))
+
+    conn.commit()
 
     message = []
     if amount >= 0:
@@ -439,6 +456,24 @@ async def bulkadjust(update, context):
 
         user_id, resolved_name = result
         old_points, new_points = update_points(user_id, resolved_name, amount)
+
+        today = datetime.now(LOCAL_TZ).strftime("%Y-%m-%d")
+
+        cursor.execute("""
+        INSERT INTO recognitions
+        (sender_id, sender_name, receiver_id, receiver_name, date, points, message_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        """, (
+            ADMIN_USER_ID,
+            f"ADMIN ADJUST ({admin_name})",
+            user_id,
+            resolved_name,
+            today,
+            amount,
+            None
+        ))
+
+        conn.commit()
 
         reason = f"/bulkadjust {resolved_name} {amount}"
         await log_manual_adjustment_to_sheet(admin_name, resolved_name, amount, reason)
