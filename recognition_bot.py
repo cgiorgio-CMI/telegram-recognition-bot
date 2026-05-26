@@ -238,7 +238,7 @@ def get_or_create_team_user(team_name, team_username=None):
         if normalized_username:
             cursor.execute("""
             UPDATE users
-            SET username=COALESCE(username, ?)
+            SET username=?
             WHERE user_id=?
             """, (normalized_username, row[0]))
             conn.commit()
